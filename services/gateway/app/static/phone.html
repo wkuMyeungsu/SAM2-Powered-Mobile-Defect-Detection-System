@@ -1,0 +1,169 @@
+<!doctype html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="theme-color" content="#121a19">
+<title>검사 카메라</title>
+<style>
+  :root {
+    --bg: #121a19;
+    --ink: #e9efec;
+    --muted: #93a39d;
+    --ok: #3fb37f;
+    --wait: #e8a33d;
+    --bad: #e5533d;
+    --frame: rgba(233, 239, 236, 0.55);
+  }
+  * { box-sizing: border-box; }
+  html, body { margin: 0; height: 100%; background: var(--bg); color: var(--ink);
+    font: 16px/1.5 -apple-system, BlinkMacSystemFont, "Apple SD Gothic Neo", "Malgun Gothic", "Noto Sans KR", sans-serif; }
+  body { display: grid; grid-template-rows: 1fr auto; padding: env(safe-area-inset-top) 0 env(safe-area-inset-bottom); }
+
+  .finder { position: relative; overflow: hidden; }
+  video { width: 100%; height: 100%; object-fit: cover; display: block; background: #0c1211; }
+  /* 검사 프레임: 모서리 4개. 전송 중이면 초록 */
+  .corners { position: absolute; inset: 7%; pointer-events: none; --c: var(--frame); filter: drop-shadow(0 0 2px rgba(0, 0, 0, .6)); }
+  .corners i { position: absolute; width: 14%; aspect-ratio: 1; border: 3px solid var(--c); }
+  .corners i:nth-child(1) { top: 0; left: 0; border-right: 0; border-bottom: 0; }
+  .corners i:nth-child(2) { top: 0; right: 0; border-left: 0; border-bottom: 0; }
+  .corners i:nth-child(3) { bottom: 0; left: 0; border-right: 0; border-top: 0; }
+  .corners i:nth-child(4) { bottom: 0; right: 0; border-left: 0; border-top: 0; }
+  body.live .corners { --c: var(--ok); }
+  .notice { position: absolute; inset: 0; display: grid; place-content: center; padding: 2rem; text-align: center; color: var(--muted); }
+  body.live .notice { display: none; }
+
+  .bar { display: grid; gap: .75rem; padding: 1rem 1.25rem 1.25rem; }
+  .state { display: flex; align-items: center; gap: .5rem; font-size: .95rem; }
+  .dot { width: .6rem; height: .6rem; border-radius: 50%; background: var(--wait); flex: none; }
+  .state[data-tone="ok"] .dot { background: var(--ok); }
+  .state[data-tone="bad"] .dot { background: var(--bad); }
+  .numbers { color: var(--muted); font-size: .85rem; font-variant-numeric: tabular-nums; }
+  button { font: inherit; font-weight: 600; font-size: 1.05rem; padding: .95rem; border-radius: .75rem; border: 0;
+    background: var(--ink); color: var(--bg); }
+  button:disabled { opacity: .45; }
+  button:focus-visible { outline: 3px solid var(--ok); outline-offset: 2px; }
+  body.live button { background: transparent; color: var(--ink); box-shadow: inset 0 0 0 2px var(--ink); }
+</style>
+</head>
+<body>
+<div class="finder">
+  <video id="video" playsinline muted autoplay></video>
+  <div class="corners" aria-hidden="true"><i></i><i></i><i></i><i></i></div>
+  <p class="notice" id="notice">과자가 지나가는 자리를 화면 가운데에 두고 촬영을 시작하세요.</p>
+</div>
+<div class="bar">
+  <div class="state" id="state" role="status" aria-live="polite"><span class="dot"></span><span id="stateText">서버에 연결하는 중</span></div>
+  <div class="numbers" id="numbers">보낸 프레임 0장</div>
+  <button id="toggle" disabled>촬영 시작</button>
+</div>
+
+<script>
+(() => {
+  const sessionId = new URLSearchParams(location.search).get("s");
+  const video = document.getElementById("video");
+  const button = document.getElementById("toggle");
+  const stateBox = document.getElementById("state");
+  const stateText = document.getElementById("stateText");
+  const numbers = document.getElementById("numbers");
+  const canvas = document.createElement("canvas");
+  const ctx = canvas.getContext("2d");
+
+  let config = { fps: 5, max_side: 1024, quality: 0.7 };
+  let ws = null, stream = null, timer = null, wakeLock = null;
+  let sent = 0, skipped = 0, encoding = false, helloSent = false, stopped = false;
+  const sentTimes = [];
+
+  function setState(text, tone) { stateText.textContent = text; stateBox.dataset.tone = tone || ""; }
+  function showNumbers() {
+    const now = performance.now();
+    while (sentTimes.length && now - sentTimes[0] > 2000) sentTimes.shift();
+    const fps = (sentTimes.length / 2).toFixed(1);
+    numbers.textContent = `보낸 프레임 ${sent}장, 초당 ${fps}장` + (skipped ? `, 네트워크 지연으로 건너뜀 ${skipped}장` : "");
+  }
+
+  if (!sessionId) { setState("주소에 세션 정보가 없습니다. 화면의 QR을 다시 찍어 주세요.", "bad"); return; }
+  if (!window.isSecureContext || !navigator.mediaDevices) {
+    setState("카메라는 HTTPS 주소에서만 열립니다. 화면의 QR로 접속해 주세요.", "bad"); return;
+  }
+
+  function connect() {
+    const scheme = location.protocol === "https:" ? "wss" : "ws";
+    ws = new WebSocket(`${scheme}://${location.host}/ws/phone/${encodeURIComponent(sessionId)}`);
+    ws.binaryType = "arraybuffer";
+    ws.onopen = () => { helloSent = false; setState(stream ? "촬영 중" : "연결됨. 촬영을 시작하세요.", stream ? "ok" : ""); button.disabled = false; };
+    ws.onmessage = (event) => {
+      try { const msg = JSON.parse(event.data); if (msg.type === "config") { config = { ...config, ...msg }; restartLoop(); } } catch (_) {}
+    };
+    ws.onclose = (event) => {
+      if (event.code === 4404) { stopped = true; stopCamera(); setState("세션이 끝났습니다. 화면의 QR을 다시 찍어 주세요.", "bad"); button.disabled = true; return; }
+      if (event.code === 4409) { stopped = true; stopCamera(); setState("다른 휴대폰이 연결되어 이 휴대폰은 멈췄습니다.", "bad"); button.disabled = true; return; }
+      if (stopped) return;
+      setState("연결이 끊겼습니다. 다시 연결하는 중", "bad");
+      setTimeout(connect, 2000);
+    };
+  }
+
+  function capture() {
+    if (!stream || !ws || ws.readyState !== WebSocket.OPEN || !video.videoWidth) return;
+    if (encoding || ws.bufferedAmount > 512 * 1024) { skipped++; showNumbers(); return; }
+    const scale = Math.min(1, config.max_side / Math.max(video.videoWidth, video.videoHeight));
+    const w = Math.round(video.videoWidth * scale), h = Math.round(video.videoHeight * scale);
+    if (canvas.width !== w || canvas.height !== h) { canvas.width = w; canvas.height = h; helloSent = false; }
+    ctx.drawImage(video, 0, 0, w, h);
+    encoding = true;
+    canvas.toBlob((blob) => {
+      encoding = false;
+      if (!blob || ws.readyState !== WebSocket.OPEN) return;
+      if (!helloSent) { ws.send(JSON.stringify({ type: "hello", width: w, height: h, user_agent: navigator.userAgent })); helloSent = true; }
+      ws.send(blob);
+      sent++; sentTimes.push(performance.now()); showNumbers();
+    }, "image/jpeg", config.quality);
+  }
+
+  function restartLoop() {
+    clearInterval(timer);
+    if (stream) timer = setInterval(capture, 1000 / Math.max(1, config.fps));
+  }
+
+  async function keepAwake() {
+    try { if ("wakeLock" in navigator) wakeLock = await navigator.wakeLock.request("screen"); } catch (_) {}
+  }
+
+  async function startCamera() {
+    button.disabled = true;
+    try {
+      stream = await navigator.mediaDevices.getUserMedia({
+        audio: false,
+        video: { facingMode: { ideal: "environment" }, width: { ideal: 1920 }, height: { ideal: 1080 } },
+      });
+    } catch (e) {
+      setState(`카메라를 열 수 없습니다: ${e.name === "NotAllowedError" ? "카메라 권한을 허용해 주세요." : e.message}`, "bad");
+      button.disabled = false; return;
+    }
+    video.srcObject = stream;
+    await video.play().catch(() => {});
+    document.body.classList.add("live");
+    button.textContent = "촬영 멈추기"; button.disabled = false;
+    setState("촬영 중", "ok");
+    keepAwake(); restartLoop();
+  }
+
+  function stopCamera() {
+    clearInterval(timer); timer = null;
+    if (stream) stream.getTracks().forEach((t) => t.stop());
+    stream = null; video.srcObject = null;
+    document.body.classList.remove("live");
+    button.textContent = "촬영 시작";
+    if (wakeLock) { wakeLock.release().catch(() => {}); wakeLock = null; }
+  }
+
+  button.addEventListener("click", () => {
+    if (stream) { stopCamera(); setState("촬영을 멈췄습니다.", ""); } else { startCamera(); }
+  });
+  document.addEventListener("visibilitychange", () => { if (document.visibilityState === "visible" && stream) keepAwake(); });
+  connect();
+})();
+</script>
+</body>
+</html>
