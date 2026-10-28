@@ -19,9 +19,9 @@
     "defect_total": 12
   },
   "objects": [
-    { "id": 17, "result": "FAIL", "circularity": 0.62 },
-    { "id": 18, "result": "PASS", "circularity": 0.93 },
-    { "id": 21, "result": "WAIT", "circularity": 0.55 }
+    { "id": 17, "result": "FAIL", "circularity": 0.83, "reason": "straight cut or broken" },
+    { "id": 18, "result": "PASS", "circularity": 0.90, "reason": "" },
+    { "id": 21, "result": "WAIT", "circularity": 0.55, "reason": "touches frame edge" }
   ]
 }
 ```
@@ -35,6 +35,7 @@
 | `summary.defect_in_frame` | 그중 FAIL 수입니다. |
 | `summary.passed_total` | 검사선을 지난 과자의 누적 수입니다. 같은 과자를 여러 번 세지 않습니다. |
 | `summary.defect_total` | 그중 FAIL 누적 수입니다. |
+| `objects[].reason` | inference가 붙인 판정 이유입니다. inference가 보내지 않으면 `null`입니다. |
 | `objects[].id` | 과자 고정 번호입니다. 프레임이 바뀌어도 같은 과자는 같은 번호이고, 마킹 이미지에도 `#17`처럼 같은 번호가 표시됩니다. |
 | `objects[].result` | `PASS` / `FAIL` / `WAIT`(화면 테두리에 걸쳐 판정 보류)입니다. |
 

@@ -23,14 +23,17 @@
 
 | 필드 | 타입 | 필수 | 설명 |
 |---|---|---|---|
-| `frame_id` | int 또는 string | ✅ | gateway가 붙인 번호입니다. 바꾸지 말고 그대로 전달해 주세요. preprocessing처럼 `"123"` 문자열이어도 됩니다. 숫자(또는 숫자 문자열)여야 순서 정리가 됩니다. |
+| `frame_id` | int, string 또는 null | | gateway가 붙인 번호입니다. 바꾸지 말고 그대로 전달해 주세요. preprocessing처럼 `"123"` 문자열이어도 됩니다. 숫자(또는 숫자 문자열)여야 순서 정리가 되고, 없거나 숫자가 아니면 도착 순서대로 처리합니다. |
 | `timestamp` | float | | gateway가 프레임을 받은 시각(unix 초)입니다. 있으면 그대로 전달해 주세요. 없으면 지연시간만 표시하지 않습니다. |
 | `image` | string | ✅ | 프레임 JPEG/PNG base64입니다. preprocessing 결과 이미지를 그대로 보내셔도 됩니다. `data:image/jpeg;base64,` 접두어는 있어도 되고 없어도 됩니다. |
 | `width`, `height` | int | | `contour`가 픽셀 좌표일 때, 그 좌표의 기준 이미지 크기입니다. preprocessing 응답의 `width`, `height`를 그대로 넣어 주시면 됩니다. 없으면 `image` 크기를 씁니다. |
 | `objects` | list | | 과자 하나당 한 개입니다. 과자가 없으면 `[]`로 보내 주세요. |
 | `objects[].contour` | `[[x, y], ...]` | ✅ | 마스크 외곽선입니다. 점은 3개 이상이어야 합니다. **0~1 정규화 좌표**를 권장하고, **픽셀 좌표도 받습니다** (값이 2보다 크면 픽셀 좌표로 봅니다. 화면 밖으로 살짝 나간 과자는 0~1 좌표여도 1을 조금 넘기 때문입니다). |
 | `objects[].circularity` | float | ✅ | `4π × 면적 / 둘레²` 값입니다. |
-| `objects[].result` | `"PASS"` \| `"FAIL"` | ✅ | 판정 결과입니다. |
+| `objects[].result` | `"PASS"` \| `"FAIL"` \| `"WAIT"` | ✅ | 판정 결과입니다. `WAIT`은 판정 보류(테두리에 걸침, 마스크 점수 낮음 등)입니다. |
+| `objects[].reason` | string | | 판정 이유입니다. 있으면 gateway·web으로 그대로 넘깁니다. |
+
+이 밖의 필드(`solidity`, `fill`, `candidate` 등)는 보내셔도 무시합니다.
 
 preprocessing 응답을 받아 그대로 이어 붙이는 경우의 예시입니다.
 
@@ -47,7 +50,7 @@ preprocessing 응답을 받아 그대로 이어 붙이는 경우의 예시입니
 
 ## 확인 부탁드리는 점
 
-1. **이미지**: preprocessing 결과 이미지는 색 보정(화이트밸런스, CLAHE)이 되어 있어서 대시보드에서 실제 색과 다르게 보입니다. 원본을 함께 넘길 수 있으면 원본을 보내 주세요. 어렵다면 preprocessing 결과 이미지로도 동작합니다. (gateway·preprocessing과 함께 정할 부분입니다.)
+1. **이미지**: preprocessing 결과 이미지는 색 보정(화이트밸런스, CLAHE)이 되어 있어서 대시보드에서 실제 색과 다르게 보입니다. inference는 요청에 `original_image`가 있으면 그것을 넘기도록 이미 구현되어 있으니, **gateway가 inference 요청에 원본 프레임을 `original_image`로 넣어 주시면** 원본에 마킹됩니다. 좌표가 0~1이라 크기가 달라도 맞습니다. 원본이 없으면 preprocessing 결과 이미지로도 동작합니다.
 2. **좌표**: 0~1 좌표와 픽셀 좌표 둘 다 받습니다. 픽셀 좌표라면 그 좌표가 기준으로 하는 이미지 크기를 `width`, `height`로 함께 보내 주세요. 0~1로 바꾸는 코드는 아래와 같습니다.
    ```python
    contours, _ = cv2.findContours(mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
