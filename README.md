@@ -16,7 +16,7 @@ SAM 2 및 모바일 스트리밍 기반 실시간 불량 과자 검출 시스템
 
 | 번호 | 구간 | 방식 | 형식 문서 |
 |---|---|---|---|
-| ① | 휴대폰 → gateway | WebSocket `/ws/phone/<세션>`, 바이너리 JPEG | `docs/contracts/frame-input.md` |
+| ① | 휴대폰 → gateway | WebSocket `/ws/phone/<세션>`, 바이너리 JPEG (Cloudflare 임시 터널 경유) | `docs/contracts/frame-input.md` |
 | ② | gateway → preprocessing | `POST /frame` | `services/preprocessing/contracts/gateway-preprocessing.md` |
 | ③ | preprocessing → inference | `POST /infer` | `services/preprocessing/contracts/preprocessing-inference.md` |
 | ④ | inference → visualizer | `POST /visualize` | `services/visualizer/contracts/inference-visualizer.md` |
@@ -24,6 +24,22 @@ SAM 2 및 모바일 스트리밍 기반 실시간 불량 과자 검출 시스템
 | ⑥ | gateway → web | WebSocket `/ws/view` | `docs/contracts/result-return.md` |
 
 gateway는 프레임마다 `frame_id`와 받은 시각 `timestamp`를 붙이고, 뒤 단계는 이 값을 그대로 넘긴다. preprocessing이 바쁜 동안 들어온 프레임은 최신 1장만 남기고 버린다.
+
+### 휴대폰 접속 (Cloudflare 임시 터널)
+
+휴대폰 브라우저는 HTTPS 주소에서만 카메라를 열어 준다. 그래서 gateway 컨테이너 안에서 `cloudflared`가 함께 실행되어, 실행한 PC의 gateway(8001)로 이어지는 공개 HTTPS 주소 `https://<임의 이름>.trycloudflare.com`을 만든다. 대시보드 QR에는 이 주소가 들어간다.
+
+```
+휴대폰 ──HTTPS──▶ Cloudflare ◀── cloudflared (실행한 PC의 gateway 컨테이너 안) ──▶ gateway :8001
+```
+
+- `cloudflared`가 실행한 PC에서 Cloudflare로 먼저 연결하므로 공유기 포트 개방이나 고정 IP가 필요 없고, 휴대폰이 PC와 다른 망(LTE 등)에 있어도 접속된다. 계정과 설정도 필요 없다.
+- 각자 자기 PC에서 `docker compose up`을 하면 그 PC에 따로 터널이 생긴다. 처리는 모두 실행한 PC에서 하고, Cloudflare는 휴대폰과 gateway 사이(①)만 전달한다. ②~⑥은 Docker 내부망에서 오간다.
+- 실행한 PC가 인터넷에 연결되어 있어야 한다.
+- 주소는 실행할 때마다 바뀐다. 매번 대시보드의 새 QR을 찍는다.
+- 주소를 아는 사람은 누구나 접속할 수 있다. 시연용으로만 쓴다.
+- 터널 상태는 gateway `/health`의 `tunnel`(`starting` → `ready`)에 나온다. 주소가 생기기 전까지 QR 주소는 `503`을 돌려준다.
+- 터널을 끄려면 `.env`에 `GATEWAY_TUNNEL=off`를 넣는다. 이때는 PC 웹캠으로만 찍을 수 있다(`localhost`는 HTTPS 없이도 카메라가 열린다). 직접 마련한 HTTPS 주소가 있으면 `GATEWAY_PUBLIC_URL`에 넣는다.
 
 ## 구조 · 담당 · 포트
 
@@ -68,8 +84,8 @@ docker compose down                    # 종료
 ### 시연 순서
 
 1. `docker compose up --build -d`로 전체를 띄우고 `docker compose ps`에서 모두 healthy인지 확인한다.
-2. PC 브라우저에서 `http://localhost:8000`을 연다.
-3. 대시보드의 QR을 휴대폰으로 찍고, 열린 페이지에서 "촬영 시작"을 누른다. 휴대폰 브라우저는 HTTPS 주소에서만 카메라를 열어 준다.
+2. PC 브라우저에서 `http://localhost:8000`을 연다. Cloudflare 터널 주소가 생기면(몇 초) QR이 나타난다.
+3. 대시보드의 QR을 휴대폰으로 찍고, 열린 페이지에서 카메라 권한을 허용한 뒤 "촬영 시작"을 누른다.
 4. 대시보드에 마킹된 프레임과 PASS / FAIL 집계가 표시된다. "누적 초기화"로 누적 수를 0으로 되돌린다.
 
 ## 테스트
@@ -89,7 +105,7 @@ docker compose down                    # 종료
 docker compose --profile test run --rm --build e2e
 ```
 
-5개 서비스가 healthy가 될 때까지 기다린 뒤, `e2e` 컨테이너가 휴대폰 대신 합성 컨베이어 영상(정상 과자 8개, 불량 과자 4개)을 초당 5장씩 20초 동안 gateway로 보내고, 대시보드 자리(`/ws/view`)에서 결과를 받아 확인한다. 끝나면 컨테이너는 지워지고 5개 서비스는 계속 떠 있다.
+5개 서비스가 healthy가 될 때까지 기다린 뒤, `e2e` 컨테이너가 Docker 내부망에서(터널을 거치지 않고) 휴대폰 대신 합성 컨베이어 영상(정상 과자 8개, 불량 과자 4개)을 초당 5장씩 20초 동안 gateway로 보내고, 대시보드 자리(`/ws/view`)에서 결과를 받아 확인한다. 끝나면 컨테이너는 지워지고 5개 서비스는 계속 떠 있다.
 
 | 확인 항목 | 통과 기준 |
 |---|---|
