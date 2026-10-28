@@ -194,9 +194,10 @@ git push -u origin main dev</code></pre></li>
 <div class="tw"><table>
   <tr><th>GitHub 설정</th><th>값</th></tr>
   <tr><td>Settings → Collaborators</td><td>팀원 GitHub 계정 초대</td></tr>
-  <tr><td>Settings → Branches → 보호 규칙 대상</td><td><code>main</code>, <code>dev</code></td></tr>
-  <tr><td>Require a pull request before merging</td><td>켬 · 승인 1명</td></tr>
-  <tr><td>Allow force pushes / Allow deletions</td><td>끔</td></tr>
+  <tr><td>Settings → Rules → Rulesets → New branch ruleset</td><td>이름 <code>protect-main-dev</code> · Enforcement status <b>Active</b> · Bypass list는 비워 둔다 (저장소 소유자도 규칙을 따른다)</td></tr>
+  <tr><td>Target branches</td><td>Include by pattern으로 <code>main</code>, <code>dev</code> 추가</td></tr>
+  <tr><td>Restrict deletions · Block force pushes</td><td>켬</td></tr>
+  <tr><td>Require a pull request before merging</td><td>켬 · Required approvals 1 · Allowed merge methods는 <b>Merge</b>만</td></tr>
   <tr><td>Settings → General → Pull Requests</td><td><b>Allow merge commits</b>만 켬 (Squash, Rebase는 끔)</td></tr>
   <tr><td>Settings → General → Automatically delete head branches</td><td>끔. 이 설정은 병합된 PR의 head 브랜치를 자동으로 지우는데, dev → main PR의 head 브랜치는 <code>dev</code>다. 작업 브랜치는 PR 병합 때 <b>Delete branch</b>를 눌러 직접 지운다.</td></tr>
 </table></div></li>
