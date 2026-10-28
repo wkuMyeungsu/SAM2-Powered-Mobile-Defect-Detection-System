@@ -39,7 +39,19 @@ inference 가 보낸 판정 결과를 원본 프레임 위에 그리고, gateway
 
 ```bash
 docker compose up --build visualizer
+docker compose run --rm visualizer python -m unittest -v test_visualizer   # 단위 테스트
 ```
+
+## 받는 형식이 달라도 연결되게 한 부분
+
+inference 가 preprocessing 결과 형식을 그대로 따라와도 끊기지 않게 받는다.
+
+| 들어오는 값 | 처리 |
+|---|---|
+| `frame_id` 가 `"123"` 문자열 | 숫자로 바꿔 순서 정리. 숫자가 아니면 도착 순서대로 처리 |
+| `timestamp` 없음 | 지연시간만 `null` |
+| `contour` 가 픽셀 좌표 (값 > 1) | `width`/`height`(없으면 이미지 크기)로 나눠 0~1 로 변환 |
+| 오류 | preprocessing 과 같은 `400 {"error": "..."}` |
 
 ## 혼자 테스트하기 (inference·gateway 없이)
 

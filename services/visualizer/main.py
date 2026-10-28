@@ -14,8 +14,11 @@ from typing import Literal
 import cv2
 import httpx
 import numpy as np
-from fastapi import FastAPI, HTTPException, Response
+from fastapi import FastAPI, HTTPException, Request, Response
+from fastapi.exceptions import RequestValidationError
+from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field
+from starlette.exceptions import HTTPException as StarletteHTTPException
 
 PORT = int(os.getenv("PORT", "8004"))
 GATEWAY_URL = os.getenv("GATEWAY_URL", "http://gateway:8001/result")
@@ -35,15 +38,17 @@ log = logging.getLogger("visualizer")
 
 
 class DetectedObject(BaseModel):
-    contour: list[list[float]] = Field(description="과자 윤곽선 [[x, y], ...], 0~1 정규화 좌표")
+    contour: list[list[float]] = Field(description="과자 윤곽선 [[x, y], ...]. 0~1 정규화 좌표 권장, 픽셀 좌표도 받음")
     circularity: float
     result: Literal["PASS", "FAIL", "WAIT"]
 
 
 class InferenceResult(BaseModel):
-    frame_id: int
-    timestamp: float = Field(description="gateway 가 프레임을 받은 시각 (unix seconds)")
-    image: str = Field(description="원본 프레임 JPEG/PNG base64")
+    frame_id: int | str = Field(description="gateway 가 붙인 번호. 숫자 또는 숫자 문자열이면 순서 정리에 쓴다")
+    timestamp: float | None = Field(None, description="gateway 가 프레임을 받은 시각 (unix seconds). 없으면 지연시간 생략")
+    image: str = Field(description="프레임 JPEG/PNG base64")
+    width: int | None = Field(None, description="contour 가 픽셀 좌표일 때 그 좌표의 기준 이미지 너비. 없으면 image 크기")
+    height: int | None = Field(None, description="contour 가 픽셀 좌표일 때 그 좌표의 기준 이미지 높이. 없으면 image 크기")
     objects: list[DetectedObject] = []
 
 
@@ -77,6 +82,14 @@ def decode_image(b64: str) -> np.ndarray:
     if img is None:
         raise HTTPException(400, "image 디코딩 실패 (JPEG/PNG 만 지원)")
     return img
+
+
+def order_key(frame_id: int | str) -> int | None:
+    """순서 비교용 정수. preprocessing 처럼 "123" 문자열로 와도 비교할 수 있게 한다."""
+    try:
+        return int(frame_id)
+    except (TypeError, ValueError):
+        return None
 
 
 def touches_edge(pts: np.ndarray) -> bool:
@@ -164,33 +177,52 @@ async def lifespan(app: FastAPI):
 app = FastAPI(title="C4 Visualizer", lifespan=lifespan)
 
 
+# 오류 본문은 preprocessing 과 같은 {"error": "..."} 형식으로 맞춘다
+@app.exception_handler(StarletteHTTPException)
+async def http_error(request: Request, exc: StarletteHTTPException):
+    return JSONResponse({"error": exc.detail}, status_code=exc.status_code)
+
+
+@app.exception_handler(RequestValidationError)
+async def validation_error(request: Request, exc: RequestValidationError):
+    e = exc.errors()[0]
+    where = ".".join(str(p) for p in e["loc"][1:]) or "body"
+    return JSONResponse({"error": f"{where}: {e['msg']}"}, status_code=400)
+
+
 @app.post("/visualize")
 async def visualize(f: InferenceResult):
     # inference 를 여러 대 띄우면 결과가 순서 없이 도착한다. 이미 보낸 것보다 오래된 프레임은 버려야 영상이 뒤로 튀지 않는다.
-    if f.frame_id <= state.last_id:
-        if state.last_id - f.frame_id < RESET_GAP:
+    # frame_id 가 숫자가 아니면 순서를 알 수 없으므로 도착한 순서대로 처리한다.
+    key = order_key(f.frame_id)
+    if key is not None and key <= state.last_id:
+        if state.last_id - key < RESET_GAP:
             return {"status": "dropped", "frame_id": f.frame_id, "last_sent": state.last_id}
-        log.warning("frame_id %d -> %d: gateway 재시작으로 보고 상태 초기화", state.last_id, f.frame_id)
+        log.warning("frame_id %d -> %d: gateway 재시작으로 보고 상태 초기화", state.last_id, key)
         reset()
 
     img = decode_image(f.image)
-    state.last_id = f.frame_id
+    if key is not None:
+        state.last_id = key
 
+    h, w = img.shape[:2]
     items, tracked = [], []
     for o in f.objects:
         pts = np.asarray(o.contour, dtype=np.float32).reshape(-1, 2)
         if len(pts) < 3:
             continue
+        if pts.max() > 1.0:  # 픽셀 좌표로 왔으면 0~1 로 바꾼다
+            pts = pts / np.array([f.width or w, f.height or h], dtype=np.float32)
         result = "WAIT" if touches_edge(pts) else o.result
         cx, cy = centroid(pts)
         items.append((pts, result, o.circularity))
         tracked.append(Tracked(cx, cy, result))
     count_crossings(tracked)
 
-    latency_ms = int((time.time() - f.timestamp) * 1000)
+    latency_ms = None if f.timestamp is None else int((time.time() - f.timestamp) * 1000)
     defect_in_frame = sum(t.result == "FAIL" for t in tracked)
     hud = [
-        f"FRAME {f.frame_id}  {latency_ms} ms",
+        f"FRAME {f.frame_id}  {'-' if latency_ms is None else latency_ms} ms",
         f"IN FRAME {len(tracked)}  NG {defect_in_frame}",
         f"PASSED {state.passed_total}  NG {state.defect_total}",
     ]
@@ -222,7 +254,7 @@ async def visualize(f: InferenceResult):
         r.raise_for_status()
     except httpx.HTTPError as e:
         # gateway 가 죽어 있어도 inference 쪽에는 정상 응답한다. 재전송하면 지연만 쌓인다.
-        log.warning("gateway 전송 실패 (frame %d): %r", f.frame_id, e)
+        log.warning("gateway 전송 실패 (frame %s): %r", f.frame_id, e)
         return {"status": "gateway_error", "frame_id": f.frame_id}
     return {"status": "ok", "frame_id": f.frame_id}
 
