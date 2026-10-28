@@ -3,8 +3,9 @@ WORKDIR /app
 ENV PYTHONUNBUFFERED=1 SAM2_BUILD_CUDA=0
 
 # GPU 없이 CPU 로 돈다. torch 를 먼저 깔아야 sam2 소스 패키지가 빌드된다.
+# 2.8 이 2.5 보다 ARM(맥 Docker) CPU 에서 약 30% 빠르다.
 RUN pip install --no-cache-dir setuptools wheel \
-    torch==2.5.1 torchvision==0.20.1 --index-url https://download.pytorch.org/whl/cpu \
+    torch==2.8.0 torchvision==0.23.0 --index-url https://download.pytorch.org/whl/cpu \
     --extra-index-url https://pypi.org/simple
 COPY requirements.txt .
 RUN pip install --no-cache-dir --no-build-isolation -r requirements.txt

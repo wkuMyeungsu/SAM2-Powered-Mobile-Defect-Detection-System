@@ -73,13 +73,13 @@ def main_():
             i = o["candidate"]
             gt = anns[i]["defect_type"] or "round" if anns else ""
             row = {"frame": img_path.name, "idx": i, "gt": gt, **{k: o[k] for k in
-                   ("circularity", "solidity", "fill", "score", "result", "reason")}}
+                   ("notch", "straight", "fill", "solidity", "circularity", "score", "result", "reason")}}
             rows.append(row)
             if anns and o["result"] != "WAIT" and (o["result"] == "FAIL") != (gt != "round"):
                 wrong.append(row)
             pts = (np.array(o["contour"]) * [w, h]).astype(np.int32)
             cv2.polylines(bgr, [pts], True, COLORS[o["result"]], 2)
-            cv2.putText(bgr, f"{o['fill']:.2f}", tuple(pts.min(axis=0)), cv2.FONT_HERSHEY_SIMPLEX, 0.4,
+            cv2.putText(bgr, f"{o['notch']:.2f}/{o['straight']:.2f}", tuple(pts.min(axis=0)), cv2.FONT_HERSHEY_SIMPLEX, 0.4,
                         COLORS[o["result"]], 1, cv2.LINE_AA)
         cv2.imwrite(str(out / img_path.name), bgr)
 
@@ -96,9 +96,10 @@ def main_():
                 continue
             col = lambda k: np.array([r[k] for r in g])  # noqa: E731
             print(f"  {gt:6s} n={len(g):3d}  FAIL {sum(r['result'] == 'FAIL' for r in g):3d}  "
-                  f"circ {col('circularity').min():.3f}~{col('circularity').max():.3f}  "
-                  f"solid {col('solidity').min():.3f}~{col('solidity').max():.3f}  "
+                  f"notch {col('notch').min():.3f}~{col('notch').max():.3f}  "
+                  f"straight {col('straight').min():.2f}~{col('straight').max():.2f}  "
                   f"fill {col('fill').min():.3f}~{col('fill').max():.3f}  "
+                  f"solid {col('solidity').min():.3f}~{col('solidity').max():.3f}  "
                   f"score≥{col('score').min():.2f}")
         print(f"  오분류 {len(wrong)}개 (WAIT 제외)")
         for r in wrong:
