@@ -80,9 +80,12 @@ def judge_frame(req: dict) -> dict:
 
     objects = []
     for (idx, box), mask, score in zip(boxes, masks, scores):
-        m = judge.measure(judge.clean_mask(mask, box))
+        mask = judge.clean_mask(mask, box)
+        m = judge.measure(mask)
         if m is None or m["area"] < TH.min_area:
             continue
+        if not judge.looks_like_cookie(bgr, mask, TH):
+            continue  # 화면 글자·벨트 무늬 같은 쿠키가 아닌 후보
         if judge.touches_border(box, w, h):
             # 잘린 쪽이 직선이라 항상 불량처럼 보인다. 판정은 보류한다.
             result, reason = "WAIT", "touches frame edge"
@@ -100,6 +103,7 @@ def judge_frame(req: dict) -> dict:
             "solidity": round(m["solidity"], 4),
             "fill": round(m["fill"], 4),
             "notch": round(m["notch"], 4),
+            "straight": round(m["straight"], 4),
             "score": round(float(score), 4),
             "result": result,
             "reason": reason,
