@@ -50,7 +50,7 @@ gateway는 프레임마다 `frame_id`와 받은 시각 `timestamp`를 붙이고,
 | `services/preprocessing/` | 리사이즈·색 보정·과자 후보 영역 검출 (C2) | 진아 | 8002 | `http://preprocessing:8002` |
 | `services/inference/` | SAM 2 분할, 원형도 기반 불량 판정 (C3) | 대희 | 8003 | `http://inference:8003` |
 | `services/visualizer/` | 판정 마킹, 과자 추적·누적 집계 (C4) | 도은 | 8004 | `http://visualizer:8004` |
-| `tests/e2e/` | 전체 연결 테스트 | 공통 | - | - |
+| `tests/pipeline/` | 휴대폰 없이 서비스 연결 확인 | 공통 | - | - |
 
 서비스별 API·환경 변수·단독 실행 방법은 각 폴더의 `README.md`에 있다.
 
@@ -99,13 +99,15 @@ docker compose down                    # 종료
 | inference | `docker compose run --rm --no-deps inference python -m unittest -v test_inference` |
 | visualizer | `docker compose run --rm --no-deps visualizer python -m unittest -v test_visualizer` |
 
-### 전체 연결 테스트 (컨테이너 전체)
+### 휴대폰 없이 서비스 연결 확인 (합성 영상)
 
 ```bash
-docker compose --profile test run --rm --build e2e
+docker compose --profile test run --rm --build pipeline
 ```
 
-5개 서비스가 healthy가 될 때까지 기다린 뒤, `e2e` 컨테이너가 Docker 내부망에서(터널을 거치지 않고) 휴대폰 대신 합성 컨베이어 영상(정상 과자 8개, 불량 과자 4개)을 초당 5장씩 20초 동안 gateway로 보내고, 대시보드 자리(`/ws/view`)에서 결과를 받아 확인한다. 끝나면 컨테이너는 지워지고 5개 서비스는 계속 떠 있다.
+②~⑥ 구간만 확인한다. 휴대폰 카메라, 휴대폰 페이지, Cloudflare 터널, 실제 과자 사진은 거치지 않으므로 실제 휴대폰 확인은 아래 체크리스트로 따로 한다.
+
+5개 서비스가 healthy가 될 때까지 기다린 뒤, `pipeline` 컨테이너가 Docker 내부망에서 휴대폰 대신 합성 컨베이어 영상(정상 과자 8개, 불량 과자 4개)을 초당 5장씩 20초 동안 gateway로 보내고, 대시보드 자리(`/ws/view`)에서 결과를 받아 확인한다. 끝나면 컨테이너는 지워지고 5개 서비스는 계속 떠 있다.
 
 | 확인 항목 | 통과 기준 |
 |---|---|
@@ -116,7 +118,31 @@ docker compose --profile test run --rm --build e2e
 | 오류 | gateway 전달 오류, preprocessing → inference 오류, visualizer → gateway 오류가 모두 0 |
 | 누적 집계 | 검사선을 지난 과자 6개, 불량 2개와 일치하는지 표시 (어긋나면 WARN만 출력하고 실패로 치지 않음) |
 
-하나라도 실패하면 종료 코드 1로 끝난다. 마지막 입력 프레임과 마킹 결과는 `tests/e2e/out/`에 저장된다(커밋하지 않음). 테스트는 visualizer 누적 집계를 초기화하고 기본 세션에 휴대폰으로 접속하므로, 시연 중에는 돌리지 않는다.
+하나라도 실패하면 종료 코드 1로 끝난다. 마지막 입력 프레임과 마킹 결과는 `tests/pipeline/out/`에 저장된다(커밋하지 않음). 테스트는 visualizer 누적 집계를 초기화하고 기본 세션에 휴대폰 자리로 접속하므로, 시연 중에는 돌리지 않는다.
+
+### 실제 휴대폰 확인 체크리스트
+
+①~⑥ 전 구간을 실제 휴대폰으로 확인한다. 사람이 휴대폰을 들고 순서대로 진행하며 각 단계의 "정상" 칸과 화면을 비교한다.
+
+준비물: 인터넷에 연결된 PC, 휴대폰(Android Chrome 또는 iOS Safari), 과자 몇 개(정상·깨진 것), 과자와 밝기 차이가 큰 단색 배경. preprocessing은 배경과 밝기 차이로 과자 후보를 찾으므로 배경이 무늬 없이 어둡거나 밝아야 한다.
+
+| 단계 | 할 일 | 정상 | 아닐 때 볼 곳 |
+|---|---|---|---|
+| 1 | `docker compose up --build -d`, `docker compose ps` | 5개 모두 `healthy` | `docker compose logs <서비스>` |
+| 2 | PC에서 `http://localhost:8001/health` | `tunnel.status`가 `ready`, `tunnel.url`에 `https://….trycloudflare.com` | `starting`이면 몇 초 기다린다. `error`면 `tunnel.error`와 `docker compose logs gateway` |
+| 3 | PC 브라우저에서 `http://localhost:8000` | 연결 상태 표시가 `gateway 연결됨`, 휴대폰 연결 칸에 QR | QR 대신 `접속 주소 준비 중 (터널: …)`이 보이면 2단계로 |
+| 4 | 휴대폰 카메라로 QR을 찍어 열기 | 휴대폰에 `연결됨. 촬영을 시작하세요.`, 대시보드 휴대폰 칸이 `휴대폰 연결됨` | `세션이 끝났습니다…`면 대시보드를 새로 고쳐 QR을 다시 찍는다 |
+| 5 | 휴대폰에서 "촬영 시작", 카메라 권한 허용 | 휴대폰에 `촬영 중`, `보낸 프레임 N장, 초당 약 5장` | `카메라를 열 수 없습니다…`면 브라우저 설정에서 카메라 권한 확인 |
+| 6 | 대시보드 휴대폰 칸 보기 | `받은 프레임`·`추론 보냄`이 계속 늘고 `오류 0` | `마지막 오류:` 문구, `http://localhost:8001/api/default-session`의 `last_error` |
+| 7 | 대시보드 검사 화면 보기 | 휴대폰이 찍는 장면이 마킹되어 2~3초 늦게 나옴, 지연 칸에 ms 표시 | 성능 칸의 `gateway 전송 실패`, `http://localhost:8002/health`의 `forward.errors` |
+| 8 | 휴대폰을 세로로 들고 찍기 | 검사 화면의 장면이 바로 서 있음 | |
+| 9 | 휴대폰을 가로로 돌려 찍기 (화면 자동 회전 켬 / 끔 각각) | 검사 화면의 장면이 바로 서 있음 | 자동 회전을 끈 상태에서는 90도 돌아가는 것이 현재 알려진 한계 |
+| 10 | 정상 과자와 깨진 과자를 함께 비추기 | 정상 과자는 초록 `PASS`, 깨진 과자는 빨강 `FAIL`, 화면 가장자리에 걸친 과자는 회색 `WAIT` | 과자에 윤곽선이 안 생기면 배경 대비를 높인다 |
+| 11 | 과자를 화면 오른쪽에서 왼쪽으로 천천히 옮기기 | 과자 중심이 검사선(검사 화면의 세로선, 왼쪽에서 34%)을 지날 때 `누적 검사`가 1 늘고, 불량이면 `누적 불량`도 1 늚 | 너무 빨리 옮기면 세지 못한다(아래 한계 참고). 왼쪽→오른쪽으로 옮기면 세지 않는다 |
+| 12 | 대시보드 "누적 초기화" | 누적 수가 0 | |
+| 13 | 휴대폰에서 "촬영 멈추기" | 대시보드 휴대폰 칸이 `휴대폰 미연결`로 바뀜 | |
+
+확인한 뒤 PR이나 팀 채널에 휴대폰 기종·브라우저, 단계별 결과(정상/아님), 성능 칸의 처리량(fps)과 지연 p95를 남긴다.
 
 ## 현재 성능과 한계
 
