@@ -37,9 +37,29 @@ SEND_QUEUE = int(os.getenv("SEND_QUEUE", "3"))             # gateway 전송 대�
 MAX_BODY = int(os.getenv("MAX_BODY_BYTES", str(10 * 1024 * 1024)))
 METRICS_WINDOW = float(os.getenv("METRICS_WINDOW", "10"))  # /metrics 의 fps·지연시간을 계산할 최근 구간(초)
 CORS_ORIGINS = os.getenv("CORS_ORIGINS", "*").split(",")    # web(8000) 대시보드가 /reset, /metrics 를 부를 수 있게
+MARK_DETAIL = os.getenv("MARK_DETAIL", "0") == "1"          # 1 이면 불량 과자 아래에 판정을 가른 값(fill 0.949 등)을 한 줄 더 쓴다
+MAX_OBJECT_SPAN = float(os.getenv("MAX_OBJECT_SPAN", "0.5"))  # 가로나 세로가 화면의 이 비율보다 큰 물체는 과자가 아니라 배경이므로 무시
 
 COLORS = {"PASS": (0, 200, 0), "FAIL": (0, 0, 255), "WAIT": (160, 160, 160)}  # BGR
 SCAN_COLOR = (69, 90, 255)
+WARN_COLOR = (0, 220, 255)
+FONT = cv2.FONT_HERSHEY_SIMPLEX
+
+# inference 의 판정 이유를 화면에 짧게 쓴다. OpenCV 기본 글꼴은 한글을 못 그려서 영어로 쓴다
+EDGE_REASON = "touches frame edge"
+SHORT_REASON = {
+    "straight cut or broken": "CUT",
+    "notch (bite or missing piece)": "NOTCH",
+    "low circularity": "SHAPE",
+    EDGE_REASON: "EDGE",
+    "low mask score": "UNSURE",
+}
+# 판정 이유별로 그 판정을 가른 값 (DetectedObject 필드 이름, 화면에 쓸 이름)
+REASON_METRIC = {
+    "straight cut or broken": ("fill", "fill"),
+    "notch (bite or missing piece)": ("solidity", "solid"),
+    "low circularity": ("circularity", "circ"),
+}
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
 logging.getLogger("httpx").setLevel(logging.WARNING)
@@ -51,6 +71,8 @@ class DetectedObject(BaseModel):
     circularity: float
     result: Literal["PASS", "FAIL", "WAIT"]
     reason: str | None = Field(None, description="inference 가 붙인 판정 이유. 있으면 gateway 로 그대로 넘긴다")
+    solidity: float | None = Field(None, description="볼록도. MARK_DETAIL 화면에 쓴다")
+    fill: float | None = Field(None, description="원 채움률. MARK_DETAIL 화면에 쓴다")
 
 
 class InferenceResult(BaseModel):
@@ -91,7 +113,12 @@ class Metrics:
     sent: int = 0
     send_errors: int = 0
     send_skipped: int = 0
-    recent: deque = field(default_factory=lambda: deque(maxlen=2000))  # (완료 시각, 지연 ms 또는 None, 그리기 ms)
+    # (완료 시각, 전체 지연 ms, 앞 단계 ms, visualizer ms, 그리기 ms). timestamp 가 없으면 앞의 두 지연은 None
+    recent: deque = field(default_factory=lambda: deque(maxlen=2000))
+
+    def recent_visualizer_ms(self, n: int = 20) -> int | None:
+        last = [r[3] for r in list(self.recent)[-n:]]
+        return round(sum(last) / len(last)) if last else None
 
 
 state = State()
@@ -164,9 +191,26 @@ def track(current: list[Tracked]) -> None:
     state.prev = current
 
 
+def label_lines(tid: int, result: str, reason: str | None, values: dict[str, float | None]) -> list[str]:
+    """과자 위에 쓸 글자. 첫 줄은 번호·판정·이유, MARK_DETAIL 이면 불량에 판정을 가른 값을 한 줄 더 쓴다.
+
+    화면에 원형도만 쓰면 원형도가 같은데 PASS·FAIL 이 갈리는 것처럼 보여서, 판정 이유를 대신 쓴다.
+    """
+    if result == "PASS":
+        return [f"#{tid} PASS"]
+    if not reason:
+        return [f"#{tid} {result} {values['circularity']:.2f}"]  # inference 가 이유를 보내지 않으면 원형도를 쓴다
+    lines = [f"#{tid} {result} {SHORT_REASON.get(reason, reason.upper()[:12])}"]
+    if MARK_DETAIL and result == "FAIL" and reason in REASON_METRIC:
+        key, name = REASON_METRIC[reason]
+        if values.get(key) is not None:
+            lines.append(f"{name} {values[key]:.3f}")
+    return lines
+
+
 def put_label(img: np.ndarray, text: str, org: tuple[int, int], color, scale: float, thick: int) -> None:
-    cv2.putText(img, text, org, cv2.FONT_HERSHEY_SIMPLEX, scale, (0, 0, 0), thick + 2, cv2.LINE_AA)
-    cv2.putText(img, text, org, cv2.FONT_HERSHEY_SIMPLEX, scale, color, thick, cv2.LINE_AA)
+    cv2.putText(img, text, org, FONT, scale, (0, 0, 0), thick + 2, cv2.LINE_AA)
+    cv2.putText(img, text, org, FONT, scale, color, thick, cv2.LINE_AA)
 
 
 def tint(img: np.ndarray, px: np.ndarray, color, alpha: float) -> None:
@@ -183,40 +227,55 @@ def tint(img: np.ndarray, px: np.ndarray, color, alpha: float) -> None:
     cv2.copyTo(tinted, mask, roi)
 
 
-def draw(img: np.ndarray, items: list[tuple[np.ndarray, str, float, int]], hud: list[str]) -> np.ndarray:
+def draw(img: np.ndarray, marks: list[tuple[np.ndarray, str, list[str]]], hud: list[str], warning: list[str]) -> np.ndarray:
     h, w = img.shape[:2]
-    scale = max(0.4, w / 1800)
-    thick = max(1, round(w / 600))
+    side = max(w, h)  # 세로로 찍은 영상에서도 글자가 너무 작지 않게 긴 변을 기준으로 크기를 정한다
+    scale = max(0.4, side / 1800)
+    thick = max(1, round(side / 600))
 
-    polys = [(np.round(pts * [w, h]).astype(np.int32), result, circ, tid) for pts, result, circ, tid in items]
+    polys = [(np.round(pts * [w, h]).astype(np.int32), result, lines) for pts, result, lines in marks]
 
     # 불량 영역은 반투명으로 채운다. 화면 전체가 아니라 과자를 감싸는 사각형 안만 합성해야 빠르다
-    for px, result, _, _ in polys:
+    for px, result, _ in polys:
         if result == "FAIL":
             tint(img, px, COLORS["FAIL"], 0.35)
 
     sx = int(SCAN_X * w)
     cv2.line(img, (sx, 0), (sx, h), SCAN_COLOR, 1)
 
-    for px, result, circ, tid in polys:
+    for px, result, lines in polys:
         color = COLORS[result]
         cv2.polylines(img, [px], True, color, thick + 1)  # 안티앨리어싱(LINE_AA)은 5배 느리고 두께가 있어 눈으로 차이가 거의 없다
-        text = f"#{tid} {result} {circ:.2f}"
-        (tw, th), _ = cv2.getTextSize(text, cv2.FONT_HERSHEY_SIMPLEX, scale, thick)
+        sizes = [cv2.getTextSize(t, FONT, scale, thick)[0] for t in lines]
+        step = sizes[0][1] + 8
         x0, y0 = px.min(axis=0)
-        x = min(max(int(x0), 2), w - tw - 2)  # 화면 밖으로 글자가 잘리지 않게
-        y = y0 - 6 if y0 - 6 > th else px[:, 1].max() + th + 6
-        put_label(img, text, (x, int(y)), color, scale, thick)
+        top = y0 - 6 - step * (len(lines) - 1)
+        y = top if top > sizes[0][1] else px[:, 1].max() + step
+        for i, (text, (tw, _)) in enumerate(zip(lines, sizes)):
+            x = min(max(int(x0), 2), w - tw - 2)  # 화면 밖으로 글자가 잘리지 않게
+            put_label(img, text, (x, int(y) + i * step), color, scale, thick)
 
+    hud_scale = scale * 0.8
     line_h = int(26 * scale)
-    cv2.rectangle(img, (0, 0), (int(330 * scale), line_h * len(hud) + 8), (0, 0, 0), -1)
+    hud_w = max(cv2.getTextSize(t, FONT, hud_scale, thick)[0][0] for t in hud) + 12
+    cv2.rectangle(img, (0, 0), (hud_w, line_h * len(hud) + 8), (0, 0, 0), -1)
     for i, line in enumerate(hud):
-        put_label(img, line, (6, line_h * (i + 1)), (255, 255, 255), scale * 0.8, thick)
+        put_label(img, line, (6, line_h * (i + 1)), (255, 255, 255), hud_scale, thick)
+
+    if warning:  # 과자를 못 찾았을 때 촬영하는 사람이 바로 알 수 있게 화면 아래에 크게 쓴다
+        sizes = [cv2.getTextSize(t, FONT, scale, thick)[0] for t in warning]
+        step = sizes[0][1] + 12
+        box_w = max(tw for tw, _ in sizes) + 24
+        y1 = h - 12
+        y0 = y1 - step * len(warning) - 6
+        cv2.rectangle(img, ((w - box_w) // 2, y0), ((w + box_w) // 2, y1), (0, 0, 0), -1)
+        for i, (text, (tw, _)) in enumerate(zip(warning, sizes)):
+            put_label(img, text, ((w - tw) // 2, y0 + step * (i + 1)), WARN_COLOR, scale, thick)
     return img
 
 
-def render_jpeg(img: np.ndarray, items: list[tuple[np.ndarray, str, float, int]], hud: list[str]) -> bytes:
-    ok, buf = cv2.imencode(".jpg", draw(img, items, hud), [cv2.IMWRITE_JPEG_QUALITY, JPEG_QUALITY])
+def render_jpeg(img: np.ndarray, marks: list[tuple[np.ndarray, str, list[str]]], hud: list[str], warning: list[str]) -> bytes:
+    ok, buf = cv2.imencode(".jpg", draw(img, marks, hud, warning), [cv2.IMWRITE_JPEG_QUALITY, JPEG_QUALITY])
     if not ok:
         raise HTTPException(500, "JPEG 인코딩 실패")
     return buf.tobytes()
@@ -289,6 +348,7 @@ def dropped(f: InferenceResult) -> dict:
 
 @app.post("/visualize")
 async def visualize(f: InferenceResult):
+    t_arrive = time.time()
     metrics.received += 1
     img = await run_in_threadpool(decode_image, f.image)
 
@@ -305,7 +365,7 @@ async def visualize(f: InferenceResult):
         state.last_id = key
 
     h, w = img.shape[:2]
-    shapes, tracked = [], []
+    shapes, tracked, ignored = [], [], 0
     for o in f.objects:
         pts = np.asarray(o.contour, dtype=np.float32).reshape(-1, 2)
         if len(pts) < 3:
@@ -313,31 +373,51 @@ async def visualize(f: InferenceResult):
         # 픽셀 좌표로 왔으면 0~1 로 바꾼다. 화면 밖으로 살짝 나간 과자는 0~1 좌표여도 1 을 조금 넘으므로 기준은 2
         if pts.max() > 2.0:
             pts = pts / np.array([f.width or w, f.height or h], dtype=np.float32)
-        result = "WAIT" if touches_edge(pts) else o.result
+        # 화면 절반보다 큰 물체는 과자가 아니라 모니터·벽·책상 같은 배경이 잘못 잡힌 것이다
+        if (pts.max(axis=0) - pts.min(axis=0)).max() > MAX_OBJECT_SPAN:
+            ignored += 1
+            continue
+        result, reason = o.result, o.reason
+        if touches_edge(pts) and (result != "WAIT" or not reason):
+            result, reason = "WAIT", EDGE_REASON
         cx, cy = centroid(pts)
-        shapes.append((pts, o.circularity, o.reason))
+        shapes.append((pts, o, reason))
         tracked.append(Tracked(cx, cy, result))
     track(tracked)
-    items = [(pts, t.result, circ, t.tid) for (pts, circ, _), t in zip(shapes, tracked)]
-    reasons = [reason for _, _, reason in shapes]
+    marks = [
+        (pts, t.result, label_lines(t.tid, t.result, reason, {"circularity": o.circularity, "solidity": o.solidity, "fill": o.fill}))
+        for (pts, o, reason), t in zip(shapes, tracked)
+    ]
 
-    latency_ms = None if f.timestamp is None else int((time.time() - f.timestamp) * 1000)
+    # 지연을 앞 단계(gateway·preprocessing·inference)와 visualizer 로 나눠 보여 준다.
+    # visualizer 시간은 그리기 전이라 아직 모르므로 최근 평균을 쓴다.
+    upstream_ms = None if f.timestamp is None else int((t_arrive - f.timestamp) * 1000)
+    mark_est = metrics.recent_visualizer_ms()
     defect_in_frame = sum(t.result == "FAIL" for t in tracked)
     summary = {
         "in_frame": len(tracked),
         "defect_in_frame": defect_in_frame,
         "passed_total": state.passed_total,
         "defect_total": state.defect_total,
+        "ignored": ignored,
     }
-    hud = [
-        f"FRAME {f.frame_id}  {'-' if latency_ms is None else latency_ms} ms",
-        f"IN FRAME {len(tracked)}  NG {defect_in_frame}",
-        f"PASSED {state.passed_total}  NG {state.defect_total}",
-    ]
+    hud = [f"FRAME {f.frame_id}"]
+    if upstream_ms is not None:
+        hud += [f"DELAY {upstream_ms + (mark_est or 0)} ms",
+                f" = AI/PRE {upstream_ms} + MARK {'-' if mark_est is None else mark_est}"]
+    hud += [f"IN FRAME {len(tracked)}  NG {defect_in_frame}", f"PASSED {state.passed_total}  NG {state.defect_total}"]
+    if ignored:
+        hud.append(f"IGNORED {ignored} (too big)")
+    warning = []
+    if ignored and not tracked:
+        warning = ["NO COOKIES FOUND - move closer"] + (["hold the phone sideways"] if h > w else [])
 
     t0 = time.perf_counter()
-    jpeg = await run_in_threadpool(render_jpeg, img, items, hud)
+    jpeg = await run_in_threadpool(render_jpeg, img, marks, hud, warning)
     render_ms = (time.perf_counter() - t0) * 1000
+    t_done = time.time()
+    visualizer_ms = int((t_done - t_arrive) * 1000)
+    latency_ms = None if f.timestamp is None else int((t_done - f.timestamp) * 1000)
 
     # 그리는 사이 더 최신 프레임이 먼저 끝났으면, 이 프레임을 보내면 화면이 뒤로 튄다
     if key is not None:
@@ -350,15 +430,17 @@ async def visualize(f: InferenceResult):
         "frame_id": f.frame_id,
         "timestamp": f.timestamp,
         "latency_ms": latency_ms,
+        "upstream_ms": upstream_ms,
+        "visualizer_ms": visualizer_ms,
         "image": base64.b64encode(jpeg).decode(),
         "summary": summary,
         "objects": [
-            {"id": tid, "result": result, "circularity": round(circ, 4), "reason": reason}
-            for (_, result, circ, tid), reason in zip(items, reasons)
+            {"id": t.tid, "result": t.result, "circularity": round(o.circularity, 4), "reason": reason}
+            for (_, o, reason), t in zip(shapes, tracked)
         ],
     })
     metrics.processed += 1
-    metrics.recent.append((time.time(), latency_ms, render_ms))
+    metrics.recent.append((t_done, latency_ms, upstream_ms, visualizer_ms, render_ms))
     return {"status": "ok", "frame_id": f.frame_id}
 
 
@@ -382,16 +464,22 @@ def get_metrics():
     now = time.time()
     window = min(METRICS_WINDOW, max(now - metrics.started, 1e-6))
     recent = [r for r in metrics.recent if now - r[0] <= window]
-    lat = sorted(r[1] for r in recent if r[1] is not None)
+
+    def stats(i: int) -> dict:
+        v = sorted(r[i] for r in recent if r[i] is not None)
+        return {
+            "avg": round(sum(v) / len(v), 1) if v else None,
+            "p95": v[int(len(v) * 0.95)] if v else None,
+            "max": v[-1] if v else None,
+        }
+
     return {
         "window_s": round(window, 1),
         "fps": round(len(recent) / window, 2),
-        "latency_ms": {
-            "avg": round(sum(lat) / len(lat), 1) if lat else None,
-            "p95": lat[int(len(lat) * 0.95)] if lat else None,
-            "max": lat[-1] if lat else None,
-        },
-        "render_ms_avg": round(sum(r[2] for r in recent) / len(recent), 1) if recent else None,
+        "latency_ms": stats(1),     # 전체: gateway 수신 → visualizer 완료
+        "upstream_ms": stats(2),    # 앞 단계: gateway 수신 → visualizer 도착 (preprocessing·inference)
+        "visualizer_ms": stats(3),  # visualizer: 도착 → 완료
+        "render_ms_avg": round(sum(r[4] for r in recent) / len(recent), 1) if recent else None,
         "counts": {
             "received": metrics.received,
             "processed": metrics.processed,

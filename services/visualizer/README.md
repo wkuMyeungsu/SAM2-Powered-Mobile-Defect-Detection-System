@@ -13,8 +13,11 @@ inference 가 보낸 판정 결과를 원본 프레임 위에 그리고, gateway
    - FAIL: 빨간 윤곽선 + 반투명 빨간 채우기
    - PASS: 초록 윤곽선
    - WAIT: 회색 윤곽선. 화면 테두리에 걸쳐 잘려 보이는 과자는 원형도가 낮게 나와 오판되므로 판정을 보류한다
-   - 과자 위에 `FAIL 0.62` 처럼 판정과 원형도를 쓴다
-   - 검사선과 좌상단 상태 표시 (프레임 번호, 지연시간, 화면 내 과자 수, 누적 수)
+   - 과자 위에 `#12 FAIL CUT` 처럼 번호·판정·판정 이유를 쓴다. 원형도만 쓰면 원형도가 같은데 PASS·FAIL 이 갈리는 것처럼 보이기 때문이다
+     (`CUT` 잘림·깨짐, `NOTCH` 파임·조각 없음, `SHAPE` 둥글지 않음, `EDGE` 화면 끝에 걸림, `UNSURE` 마스크 점수 낮음. inference 가 이유를 안 보내면 원형도)
+   - `MARK_DETAIL=1` 이면 불량 아래에 판정을 가른 값(`fill 0.949`)을 한 줄 더 쓴다
+   - 화면 절반보다 큰 윤곽선(모니터·벽 같은 배경)은 그리지 않고, 과자가 하나도 없으면 화면 아래에 촬영 안내(`NO COOKIES FOUND - move closer`)를 띄운다
+   - 검사선과 좌상단 상태 표시 (프레임 번호, 지연시간을 앞 단계·visualizer 로 나눈 값, 화면 내 과자 수, 누적 수)
 3. **순서 정리**: inference 를 여러 대 띄우면 결과가 순서 없이 도착한다. 이미 보낸 것보다 오래된 프레임은 버린다
 4. **누적 집계**: 과자 중심이 검사선(화면 폭 34%)을 지나는 순간에만 센다. 이전 프레임의 과자와 짝을 지어 "센 과자" 표시를 이어받으므로, 같은 과자가 여러 프레임에 찍히거나 마스크가 흔들려 검사선을 넘나들어도 한 번만 센다
 5. **보내기**: 마킹된 JPEG + 판정 요약을 gateway 로 (`POST http://gateway:8001/result`). inference 에는 바로 응답하고 전송은 대기열에서 순서대로 한다. gateway 가 느리거나 꺼져 있어도 inference 를 기다리게 하지 않는다
@@ -30,7 +33,7 @@ inference 가 보낸 판정 결과를 원본 프레임 위에 그리고, gateway
 |---|---|---|
 | POST | `/visualize` | inference 결과 받기 |
 | POST | `/reset` | 누적 수, frame_id 기록, 측정값 초기화 |
-| GET | `/metrics` | 최근 10초 처리량(fps), 지연시간(평균·p95·최대), 그리기 시간, 받음·처리·버림·전송 횟수 |
+| GET | `/metrics` | 최근 10초 처리량(fps), 지연시간을 앞 단계·visualizer 로 나눈 값(평균·p95·최대), 받음·처리·버림·전송 횟수 |
 | GET | `/latest.jpg` | 마지막으로 그린 프레임 (브라우저로 바로 확인) |
 | GET | `/health` | 상태와 누적 수 |
 | GET | `/docs` | FastAPI 자동 문서 |
@@ -103,6 +106,8 @@ python services/visualizer/tests/send_sample.py --sim-dir services/visualizer/te
 | `MAX_BODY_BYTES` | `10485760` | 요청 본문 최대 크기 (preprocessing 과 같음) |
 | `METRICS_WINDOW` | `10` | `/metrics` 의 fps·지연시간 계산 구간(초) |
 | `CORS_ORIGINS` | `*` | `/reset`, `/metrics` 를 브라우저에서 부를 수 있는 출처. web(8000) 대시보드용 |
+| `MARK_DETAIL` | `0` | `1` 이면 불량 과자 아래에 판정을 가른 값(`fill 0.949` 등)을 한 줄 더 쓴다. 판정 기준을 맞출 때 쓴다 |
+| `MAX_OBJECT_SPAN` | `0.5` | 가로나 세로가 화면의 이 비율보다 큰 윤곽선은 배경으로 보고 무시한다 |
 
 ## 성능 측정 (Scale-out 전후 비교)
 
@@ -113,12 +118,16 @@ curl http://localhost:8004/metrics
 ```
 
 ```json
-{"window_s": 10.0, "fps": 16.7, "latency_ms": {"avg": 84.1, "p95": 113, "max": 2131}, "render_ms_avg": 50.6,
+{"window_s": 10.0, "fps": 16.7, "latency_ms": {"avg": 84.1, "p95": 113, "max": 2131},
+ "upstream_ms": {"avg": 70.2, "p95": 98, "max": 2110}, "visualizer_ms": {"avg": 13.9, "p95": 21, "max": 40}, "render_ms_avg": 9.5,
  "counts": {"received": 200, "processed": 167, "dropped_old": 33, "sent": 167, "send_errors": 0, "send_skipped": 0}}
 ```
 
 - `fps`: visualizer 가 끝까지 처리한 초당 프레임 수. 파이프라인 전체 처리량이다
 - `latency_ms`: gateway 수신부터 visualizer 처리까지. gateway 가 `timestamp` 를 붙여야 나온다
+- `upstream_ms` / `visualizer_ms`: 위 지연을 앞 단계(preprocessing·inference)와 visualizer 로 나눈 값. 느릴 때 어디가 느린지 본다
+
+마킹 화면 왼쪽 위에도 `DELAY 1450 ms = AI/PRE 1432 + MARK 18` 처럼 나눠서 쓴다 (MARK 는 최근 평균).
 - `dropped_old`: 순서가 늦게 도착해 버린 프레임. inference 를 여러 대 띄우면 생긴다
 
 ## 처리 속도
