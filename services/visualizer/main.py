@@ -29,8 +29,9 @@ GATEWAY_URL = os.getenv("GATEWAY_URL", "http://gateway:8001/result")
 JPEG_QUALITY = int(os.getenv("JPEG_QUALITY", "80"))
 SCAN_X = float(os.getenv("SCAN_X", "0.34"))                # 검사선 x 위치(0~1). 과자 중심이 이 선을 지날 때만 누적 집계
 EDGE_MARGIN = float(os.getenv("EDGE_MARGIN", "0.005"))     # 화면 테두리에 닿은 과자는 잘려 보이는 것이므로 WAIT 처리
-MAX_JUMP = float(os.getenv("MAX_JUMP", "0.15"))            # 두 프레임 사이 과자가 움직일 수 있는 최대 거리(0~1)
-JITTER = float(os.getenv("JITTER", "0.03"))                # 마스크가 흔들려 과자 중심이 뒤로 갈 수 있는 거리(0~1)
+MAX_JUMP = float(os.getenv("MAX_JUMP", "0.6"))             # 처리한 두 프레임 사이 벨트가 움직일 수 있는 최대 거리(0~1). SAM 2 가 느리면 크다
+JITTER = float(os.getenv("JITTER", "0.03"))                # 마스크가 흔들려 과자 중심이 벨트 이동과 어긋날 수 있는 거리(0~1)
+TRACK_HISTORY = int(os.getenv("TRACK_HISTORY", "6"))       # 벨트 속도를 맞춰 볼 최근 프레임 수
 SAME_LINE_TOL = float(os.getenv("SAME_LINE_TOL", "0.05"))  # 같은 과자로 볼 y 차이 한계(0~1)
 RESET_GAP = int(os.getenv("RESET_GAP", "300"))             # frame_id 가 이만큼 작아지면 gateway 재시작으로 보고 초기화
 SEND_QUEUE = int(os.getenv("SEND_QUEUE", "3"))             # gateway 전송 대기열 크기. 넘치면 가장 오래된 프레임부터 버림
@@ -89,6 +90,7 @@ class Tracked:
     cx: float
     cy: float
     result: str
+    circ: float = 0.0
     counted: bool = False
     tid: int = -1  # 과자 고정 번호. 프레임이 바뀌어도 같은 과자면 같은 번호
 
@@ -97,7 +99,9 @@ class Tracked:
 class State:
     last_id: int = -1      # 순서 확인을 통과한 마지막 frame_id
     last_queued: int = -1  # gateway 전송 대기열에 넣은 마지막 frame_id
-    prev: list[Tracked] = field(default_factory=list)
+    # 최근 프레임의 (시각, 과자들). 벨트 속도를 추정하고 직전 프레임과 짝을 짓는 데 쓴다
+    history: deque = field(default_factory=lambda: deque(maxlen=TRACK_HISTORY))
+    velocity: float | None = None  # 벨트 속도 (화면 폭/초, 왼쪽이 +)
     next_tid: int = 1
     passed_total: int = 0
     defect_total: int = 0
@@ -158,37 +162,90 @@ def centroid(pts: np.ndarray) -> tuple[float, float]:
     return m["m10"] / m["m00"], m["m01"] / m["m00"]
 
 
-def track(current: list[Tracked]) -> None:
+def match_score(prev: list[Tracked], cur: list[Tracked], shift: float) -> float:
+    """벨트가 shift 만큼 왼쪽으로 움직였다고 볼 때 두 프레임의 과자가 얼마나 잘 겹치는지.
+
+    위치가 맞을수록, 판정과 원형도까지 같을수록 점수가 높다.
+    """
+    total = 0.0
+    for c in cur:
+        best = 0.0
+        for p in prev:
+            err = abs(p.cx - c.cx - shift)
+            if err <= JITTER and abs(p.cy - c.cy) <= SAME_LINE_TOL:
+                best = max(best, 2 + (p.result == c.result) - 3 * abs(p.circ - c.circ) - err / JITTER)
+        total += best
+    return total
+
+
+def estimate_shift(cur: list[Tracked], t: float | None) -> float:
+    """직전 프레임 이후 벨트가 움직인 거리(화면 폭 비율, 왼쪽이 +)를 고른다.
+
+    SAM 2 가 느려 과자가 많이 움직이면, 과자 하나씩 '가장 가까운 과자'와 짝지을 때 바로 뒤 과자와 헷갈린다.
+    컨베이어 위 과자는 모두 같이 움직이므로 벨트 전체의 이동 후보를 채점해 고른다.
+    시간 정보가 있으면 같은 속도를 최근 프레임들에도 적용해 맞는지 보고, 갑자기 속도가 바뀌는 후보는 덜 믿는다.
+    """
+    prev_t, prev = state.history[-1]
+    dt = t - prev_t if t is not None and prev_t is not None and t > prev_t else None
+    cands = {round(p.cx - c.cx, 4) for c in cur for p in prev
+             if abs(p.cy - c.cy) <= SAME_LINE_TOL and -JITTER <= p.cx - c.cx <= MAX_JUMP}
+    if not cands:
+        return 0.0
+    history = list(state.history)
+
+    def score(s: float) -> float:
+        # 점수가 비슷하면 덜 움직인 쪽. 다만 벨트는 뒤로 가지 않으므로, 같은 간격으로 늘어선 과자에서
+        # '앞으로 많이 감'과 '뒤로 조금 감'이 똑같이 맞아 보일 때는 앞으로 간 쪽을 고른다
+        total = match_score(prev, cur, s) - 0.5 * abs(s) - (1.0 if s < -0.01 else 0.0)
+        if dt:
+            v = s / dt
+            for (ta, a), (tb, b) in zip(history[:-1], history[1:]):
+                if ta is not None and tb is not None and tb > ta:
+                    total += 0.5 * match_score(a, b, v * (tb - ta))
+            if state.velocity is not None:
+                total -= 2 * abs(v - state.velocity) * dt
+        return total
+
+    return max(cands, key=score)
+
+
+def track(current: list[Tracked], t: float | None) -> None:
     """직전 프레임의 과자와 짝을 지어 고정 번호를 이어 붙이고, 검사선을 처음 넘는 순간에만 1개로 센다.
 
-    짝은 같은 줄에서 왼쪽으로 조금 움직인(또는 JITTER 만큼 흔들린) 가장 가까운 과자다.
+    짝은 벨트 이동(estimate_shift)만큼 옮겼을 때 JITTER 안에 들어오는 같은 줄의 과자다.
     센 표시를 짝에게 물려주므로, 마스크가 흔들려 과자 중심이 검사선을 넘나들어도 다시 세지 않는다.
     짝이 없는 과자(새로 화면에 들어온 과자)는 새 번호를 받는다.
     """
-    pairs = sorted(
-        (abs(p.cx - c.cx), i, j)
-        for i, c in enumerate(current)
-        for j, p in enumerate(state.prev)
-        if -JITTER <= p.cx - c.cx <= MAX_JUMP and abs(p.cy - c.cy) <= SAME_LINE_TOL
-    )
-    used_cur, used_prev = set(), set()
-    for _, i, j in pairs:
-        if i in used_cur or j in used_prev:
-            continue
-        used_cur.add(i)
-        used_prev.add(j)
-        c, p = current[i], state.prev[j]
-        c.counted = p.counted
-        c.tid = p.tid
-        if not c.counted and c.result != "WAIT" and p.cx >= SCAN_X > c.cx:
-            c.counted = True
-            state.passed_total += 1
-            state.defect_total += c.result == "FAIL"
+    if state.history:
+        prev_t, prev = state.history[-1]
+        shift = estimate_shift(current, t)
+        pairs = sorted(
+            (abs(p.cx - c.cx - shift), i, j)
+            for i, c in enumerate(current)
+            for j, p in enumerate(prev)
+            if abs(p.cx - c.cx - shift) <= JITTER and abs(p.cy - c.cy) <= SAME_LINE_TOL
+        )
+        used_cur, used_prev = set(), set()
+        for _, i, j in pairs:
+            if i in used_cur or j in used_prev:
+                continue
+            used_cur.add(i)
+            used_prev.add(j)
+            c, p = current[i], prev[j]
+            c.counted = p.counted
+            c.tid = p.tid
+            if not c.counted and c.result != "WAIT" and p.cx >= SCAN_X > c.cx:
+                c.counted = True
+                state.passed_total += 1
+                state.defect_total += c.result == "FAIL"
+        if used_cur and t is not None and prev_t is not None and t > prev_t:
+            v = shift / (t - prev_t)
+            state.velocity = v if state.velocity is None else 0.7 * state.velocity + 0.3 * v
     for c in current:
         if c.tid < 0:
             c.tid = state.next_tid
             state.next_tid += 1
-    state.prev = current
+    state.history.append((t, current))
 
 
 def label_lines(tid: int, result: str, reason: str | None, values: dict[str, float | None]) -> list[str]:
@@ -382,8 +439,8 @@ async def visualize(f: InferenceResult):
             result, reason = "WAIT", EDGE_REASON
         cx, cy = centroid(pts)
         shapes.append((pts, o, reason))
-        tracked.append(Tracked(cx, cy, result))
-    track(tracked)
+        tracked.append(Tracked(cx, cy, result, o.circularity))
+    track(tracked, f.timestamp if f.timestamp is not None else t_arrive)
     marks = [
         (pts, t.result, label_lines(t.tid, t.result, reason, {"circularity": o.circularity, "solidity": o.solidity, "fill": o.fill}))
         for (pts, o, reason), t in zip(shapes, tracked)

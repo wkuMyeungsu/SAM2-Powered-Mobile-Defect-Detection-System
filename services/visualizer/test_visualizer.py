@@ -163,6 +163,16 @@ class VisualizerTest(unittest.TestCase):
         s = self.gateway.sent[-1]["summary"]
         self.assertEqual((s["passed_total"], s["defect_total"]), (1, 0))
 
+    def test_slow_processing_counts_each_cookie_once(self):
+        """SAM 2 가 느려 과자가 과자 간격(0.17)에 가깝게 움직여도 바로 뒤 과자와 헷갈리지 않고 센다"""
+        pitch, step = 0.17, 0.14
+        for n in range(8):
+            objs = [{"contour": square(x, 0.5, half=0.03), "circularity": 0.9, "result": "PASS"}
+                    for k in range(8) if 0.05 < (x := 0.95 + k * pitch - n * step) < 0.95]
+            self.send(n, objs, timestamp=1000 + n * 1.5)
+        crossed = sum(1 for k in range(8) if 0.95 + k * pitch >= 0.34 > 0.95 + k * pitch - 7 * step)
+        self.assertEqual(self.gateway.sent[-1]["summary"]["passed_total"], crossed)
+
     def test_same_cookie_keeps_id(self):
         """같은 과자는 프레임이 바뀌어도 같은 번호, 새로 들어온 과자는 새 번호"""
         self.send(0, [{"contour": square(0.60, 0.5), "circularity": 0.9, "result": "PASS"}])
