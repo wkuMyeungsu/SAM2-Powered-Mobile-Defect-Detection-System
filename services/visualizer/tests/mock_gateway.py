@@ -17,11 +17,12 @@ app = FastAPI(title="mock gateway")
 
 @app.post("/result")
 async def result(payload: dict):
-    fid = payload["frame_id"]
-    (OUT / f"frame_{fid:05d}.jpg").write_bytes(base64.b64decode(payload["image"]))
+    fid = str(payload["frame_id"])  # 숫자 또는 문자열
+    (OUT / f"frame_{fid.zfill(5)}.jpg").write_bytes(base64.b64decode(payload["image"]))
     s = payload["summary"]
+    latency = "-" if payload["latency_ms"] is None else payload["latency_ms"]
     print(
-        f"frame {fid:5d} | {payload['latency_ms']:4d} ms | "
+        f"frame {fid:>5} | {latency:>4} ms | "
         f"화면 {s['in_frame']}개 (불량 {s['defect_in_frame']}) | "
         f"누적 {s['passed_total']}개 (불량 {s['defect_total']})",
         flush=True,

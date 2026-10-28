@@ -3,10 +3,12 @@
 inference 가 보낸 판정 결과를 원본 프레임 위에 그린 뒤 gateway 로 돌려보낸다.
 입출력 형식은 contracts/inference-visualizer.md, contracts/visualizer-gateway.md 참고.
 """
+import asyncio
 import base64
 import logging
 import os
 import time
+from collections import deque
 from contextlib import asynccontextmanager
 from dataclasses import dataclass, field
 from typing import Literal
@@ -15,6 +17,7 @@ import cv2
 import httpx
 import numpy as np
 from fastapi import FastAPI, HTTPException, Request, Response
+from fastapi.concurrency import run_in_threadpool
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field
@@ -26,8 +29,12 @@ JPEG_QUALITY = int(os.getenv("JPEG_QUALITY", "80"))
 SCAN_X = float(os.getenv("SCAN_X", "0.34"))                # 검사선 x 위치(0~1). 과자 중심이 이 선을 지날 때만 누적 집계
 EDGE_MARGIN = float(os.getenv("EDGE_MARGIN", "0.005"))     # 화면 테두리에 닿은 과자는 잘려 보이는 것이므로 WAIT 처리
 MAX_JUMP = float(os.getenv("MAX_JUMP", "0.15"))            # 두 프레임 사이 과자가 움직일 수 있는 최대 거리(0~1)
+JITTER = float(os.getenv("JITTER", "0.03"))                # 마스크가 흔들려 과자 중심이 뒤로 갈 수 있는 거리(0~1)
 SAME_LINE_TOL = float(os.getenv("SAME_LINE_TOL", "0.05"))  # 같은 과자로 볼 y 차이 한계(0~1)
 RESET_GAP = int(os.getenv("RESET_GAP", "300"))             # frame_id 가 이만큼 작아지면 gateway 재시작으로 보고 초기화
+SEND_QUEUE = int(os.getenv("SEND_QUEUE", "3"))             # gateway 전송 대기열 크기. 넘치면 가장 오래된 프레임부터 버림
+MAX_BODY = int(os.getenv("MAX_BODY_BYTES", str(10 * 1024 * 1024)))
+METRICS_WINDOW = float(os.getenv("METRICS_WINDOW", "10"))  # /metrics 의 fps·지연시간을 계산할 최근 구간(초)
 
 COLORS = {"PASS": (0, 200, 0), "FAIL": (0, 0, 255), "WAIT": (160, 160, 160)}  # BGR
 SCAN_COLOR = (69, 90, 255)
@@ -57,18 +64,33 @@ class Tracked:
     cx: float
     cy: float
     result: str
+    counted: bool = False
 
 
 @dataclass
 class State:
-    last_id: int = -1
+    last_id: int = -1      # 순서 확인을 통과한 마지막 frame_id
+    last_queued: int = -1  # gateway 전송 대기열에 넣은 마지막 frame_id
     prev: list[Tracked] = field(default_factory=list)
     passed_total: int = 0
     defect_total: int = 0
     latest_jpeg: bytes | None = None
 
 
+@dataclass
+class Metrics:
+    started: float = field(default_factory=time.time)
+    received: int = 0
+    processed: int = 0
+    dropped_old: int = 0
+    sent: int = 0
+    send_errors: int = 0
+    send_skipped: int = 0
+    recent: deque = field(default_factory=lambda: deque(maxlen=2000))  # (완료 시각, 지연 ms 또는 None, 그리기 ms)
+
+
 state = State()
+metrics = Metrics()
 
 
 def decode_image(b64: str) -> np.ndarray:
@@ -105,25 +127,29 @@ def centroid(pts: np.ndarray) -> tuple[float, float]:
 
 
 def count_crossings(current: list[Tracked]) -> None:
-    """직전 프레임에서 검사선 오른쪽에 있던 과자가 이번 프레임에 왼쪽으로 넘어왔으면 1개로 센다.
+    """직전 프레임의 과자와 짝을 지어, 검사선을 처음 넘는 순간에만 1개로 센다.
 
-    같은 과자가 여러 프레임에 찍혀도 검사선을 넘는 순간은 한 번뿐이라 중복 집계가 없다.
+    짝은 같은 줄에서 왼쪽으로 조금 움직인(또는 JITTER 만큼 흔들린) 가장 가까운 과자다.
+    센 표시를 짝에게 물려주므로, 마스크가 흔들려 과자 중심이 검사선을 넘나들어도 다시 세지 않는다.
     """
-    used = set()
-    for cur in current:
-        if cur.result == "WAIT" or cur.cx >= SCAN_X:
+    pairs = sorted(
+        (abs(p.cx - c.cx), i, j)
+        for i, c in enumerate(current)
+        for j, p in enumerate(state.prev)
+        if -JITTER <= p.cx - c.cx <= MAX_JUMP and abs(p.cy - c.cy) <= SAME_LINE_TOL
+    )
+    used_cur, used_prev = set(), set()
+    for _, i, j in pairs:
+        if i in used_cur or j in used_prev:
             continue
-        best = None
-        for i, p in enumerate(state.prev):
-            if i in used or p.cx < SCAN_X:
-                continue
-            dx = p.cx - cur.cx
-            if 0 < dx <= MAX_JUMP and abs(p.cy - cur.cy) <= SAME_LINE_TOL and (best is None or dx < best[1]):
-                best = (i, dx)
-        if best:
-            used.add(best[0])
+        used_cur.add(i)
+        used_prev.add(j)
+        c, p = current[i], state.prev[j]
+        c.counted = p.counted
+        if not c.counted and c.result != "WAIT" and p.cx >= SCAN_X > c.cx:
+            c.counted = True
             state.passed_total += 1
-            state.defect_total += cur.result == "FAIL"
+            state.defect_total += c.result == "FAIL"
     state.prev = current
 
 
@@ -166,15 +192,57 @@ def draw(img: np.ndarray, items: list[tuple[np.ndarray, str, float]], hud: list[
     return img
 
 
+def render_jpeg(img: np.ndarray, items: list[tuple[np.ndarray, str, float]], hud: list[str]) -> bytes:
+    ok, buf = cv2.imencode(".jpg", draw(img, items, hud), [cv2.IMWRITE_JPEG_QUALITY, JPEG_QUALITY])
+    if not ok:
+        raise HTTPException(500, "JPEG 인코딩 실패")
+    return buf.tobytes()
+
+
+def enqueue(payload: dict) -> None:
+    """gateway 가 느려도 inference 를 기다리게 하지 않도록 대기열에 넣고 바로 돌아간다."""
+    q: asyncio.Queue = app.state.queue
+    if q.full():
+        q.get_nowait()  # 화면은 최신 프레임이 중요하므로 가장 오래된 것을 버린다
+        metrics.send_skipped += 1
+    q.put_nowait(payload)
+
+
+async def send_worker() -> None:
+    """대기열의 프레임을 한 번에 하나씩, 넣은 순서대로 gateway 로 보낸다."""
+    q: asyncio.Queue = app.state.queue
+    while True:
+        payload = await q.get()
+        try:
+            r = await app.state.client.post(GATEWAY_URL, json=payload)
+            r.raise_for_status()
+            metrics.sent += 1
+        except httpx.HTTPError as e:
+            metrics.send_errors += 1
+            if metrics.send_errors == 1 or metrics.send_errors % 100 == 0:  # gateway 가 꺼져 있을 때 로그가 넘치지 않게
+                log.warning("gateway 전송 실패 %d회 (frame %s): %r", metrics.send_errors, payload["frame_id"], e)
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     app.state.client = httpx.AsyncClient(timeout=2.0)
+    app.state.queue = asyncio.Queue(SEND_QUEUE)
+    worker = asyncio.create_task(send_worker())
     log.info("gateway=%s scan_x=%.2f", GATEWAY_URL, SCAN_X)
     yield
+    worker.cancel()
     await app.state.client.aclose()
 
 
 app = FastAPI(title="C4 Visualizer", lifespan=lifespan)
+
+
+@app.middleware("http")
+async def limit_body(request: Request, call_next):
+    length = request.headers.get("content-length")
+    if length and length.isdigit() and int(length) > MAX_BODY:
+        return JSONResponse({"error": f"본문이 너무 큽니다 (최대 {MAX_BODY} bytes)"}, status_code=413)
+    return await call_next(request)
 
 
 # 오류 본문은 preprocessing 과 같은 {"error": "..."} 형식으로 맞춘다
@@ -190,18 +258,25 @@ async def validation_error(request: Request, exc: RequestValidationError):
     return JSONResponse({"error": f"{where}: {e['msg']}"}, status_code=400)
 
 
+def dropped(f: InferenceResult) -> dict:
+    metrics.dropped_old += 1
+    return {"status": "dropped", "frame_id": f.frame_id, "last_sent": state.last_id}
+
+
 @app.post("/visualize")
 async def visualize(f: InferenceResult):
+    metrics.received += 1
+    img = await run_in_threadpool(decode_image, f.image)
+
     # inference 를 여러 대 띄우면 결과가 순서 없이 도착한다. 이미 보낸 것보다 오래된 프레임은 버려야 영상이 뒤로 튀지 않는다.
     # frame_id 가 숫자가 아니면 순서를 알 수 없으므로 도착한 순서대로 처리한다.
+    # 확인부터 집계까지는 await 없이 이어서 실행하므로 다른 요청이 끼어들지 않는다.
     key = order_key(f.frame_id)
     if key is not None and key <= state.last_id:
         if state.last_id - key < RESET_GAP:
-            return {"status": "dropped", "frame_id": f.frame_id, "last_sent": state.last_id}
+            return dropped(f)
         log.warning("frame_id %d -> %d: gateway 재시작으로 보고 상태 초기화", state.last_id, key)
-        reset()
-
-    img = decode_image(f.image)
+        reset_state()
     if key is not None:
         state.last_id = key
 
@@ -221,50 +296,84 @@ async def visualize(f: InferenceResult):
 
     latency_ms = None if f.timestamp is None else int((time.time() - f.timestamp) * 1000)
     defect_in_frame = sum(t.result == "FAIL" for t in tracked)
+    summary = {
+        "in_frame": len(tracked),
+        "defect_in_frame": defect_in_frame,
+        "passed_total": state.passed_total,
+        "defect_total": state.defect_total,
+    }
     hud = [
         f"FRAME {f.frame_id}  {'-' if latency_ms is None else latency_ms} ms",
         f"IN FRAME {len(tracked)}  NG {defect_in_frame}",
         f"PASSED {state.passed_total}  NG {state.defect_total}",
     ]
-    img = draw(img, items, hud)
 
-    ok, buf = cv2.imencode(".jpg", img, [cv2.IMWRITE_JPEG_QUALITY, JPEG_QUALITY])
-    if not ok:
-        raise HTTPException(500, "JPEG 인코딩 실패")
-    state.latest_jpeg = buf.tobytes()
+    t0 = time.perf_counter()
+    jpeg = await run_in_threadpool(render_jpeg, img, items, hud)
+    render_ms = (time.perf_counter() - t0) * 1000
 
-    payload = {
+    # 그리는 사이 더 최신 프레임이 먼저 끝났으면, 이 프레임을 보내면 화면이 뒤로 튄다
+    if key is not None:
+        if key < state.last_queued:
+            return dropped(f)
+        state.last_queued = key
+    state.latest_jpeg = jpeg
+
+    enqueue({
         "frame_id": f.frame_id,
         "timestamp": f.timestamp,
         "latency_ms": latency_ms,
-        "image": base64.b64encode(state.latest_jpeg).decode(),
-        "summary": {
-            "in_frame": len(tracked),
-            "defect_in_frame": defect_in_frame,
-            "passed_total": state.passed_total,
-            "defect_total": state.defect_total,
-        },
+        "image": base64.b64encode(jpeg).decode(),
+        "summary": summary,
         "objects": [
             {"id": i, "result": result, "circularity": round(circ, 4)}
             for i, (_, result, circ) in enumerate(items)
         ],
-    }
-    try:
-        r = await app.state.client.post(GATEWAY_URL, json=payload)
-        r.raise_for_status()
-    except httpx.HTTPError as e:
-        # gateway 가 죽어 있어도 inference 쪽에는 정상 응답한다. 재전송하면 지연만 쌓인다.
-        log.warning("gateway 전송 실패 (frame %s): %r", f.frame_id, e)
-        return {"status": "gateway_error", "frame_id": f.frame_id}
+    })
+    metrics.processed += 1
+    metrics.recent.append((time.time(), latency_ms, render_ms))
     return {"status": "ok", "frame_id": f.frame_id}
+
+
+def reset_state() -> None:
+    global state
+    state = State()
 
 
 @app.post("/reset")
 def reset():
-    """누적 집계와 frame_id 기록을 초기화한다. 시연을 새로 시작할 때 호출."""
-    global state
-    state = State()
+    """누적 집계, frame_id 기록, 측정값을 초기화한다. 시연이나 성능 측정을 새로 시작할 때 호출."""
+    global metrics
+    reset_state()
+    metrics = Metrics()
     return {"status": "ok"}
+
+
+@app.get("/metrics")
+def get_metrics():
+    """성능 측정용. fps 와 지연시간은 최근 METRICS_WINDOW 초 기준이다."""
+    now = time.time()
+    window = min(METRICS_WINDOW, max(now - metrics.started, 1e-6))
+    recent = [r for r in metrics.recent if now - r[0] <= window]
+    lat = sorted(r[1] for r in recent if r[1] is not None)
+    return {
+        "window_s": round(window, 1),
+        "fps": round(len(recent) / window, 2),
+        "latency_ms": {
+            "avg": round(sum(lat) / len(lat), 1) if lat else None,
+            "p95": lat[int(len(lat) * 0.95)] if lat else None,
+            "max": lat[-1] if lat else None,
+        },
+        "render_ms_avg": round(sum(r[2] for r in recent) / len(recent), 1) if recent else None,
+        "counts": {
+            "received": metrics.received,
+            "processed": metrics.processed,
+            "dropped_old": metrics.dropped_old,
+            "sent": metrics.sent,
+            "send_errors": metrics.send_errors,
+            "send_skipped": metrics.send_skipped,
+        },
+    }
 
 
 @app.get("/latest.jpg")
