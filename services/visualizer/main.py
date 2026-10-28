@@ -168,6 +168,20 @@ def put_label(img: np.ndarray, text: str, org: tuple[int, int], color, scale: fl
     cv2.putText(img, text, org, cv2.FONT_HERSHEY_SIMPLEX, scale, color, thick, cv2.LINE_AA)
 
 
+def tint(img: np.ndarray, px: np.ndarray, color, alpha: float) -> None:
+    """윤곽선 안쪽을 color 로 반투명하게 칠한다 (img 를 직접 바꾼다)"""
+    h, w = img.shape[:2]
+    x, y, bw, bh = cv2.boundingRect(px)
+    x0, y0, x1, y1 = max(x, 0), max(y, 0), min(x + bw, w), min(y + bh, h)
+    if x1 <= x0 or y1 <= y0:
+        return
+    roi = img[y0:y1, x0:x1]
+    mask = np.zeros(roi.shape[:2], np.uint8)
+    cv2.fillPoly(mask, [px - [x0, y0]], 255)
+    tinted = cv2.addWeighted(roi, 1 - alpha, np.full_like(roi, color), alpha, 0)
+    cv2.copyTo(tinted, mask, roi)
+
+
 def draw(img: np.ndarray, items: list[tuple[np.ndarray, str, float, int]], hud: list[str]) -> np.ndarray:
     h, w = img.shape[:2]
     scale = max(0.4, w / 1800)
@@ -175,19 +189,17 @@ def draw(img: np.ndarray, items: list[tuple[np.ndarray, str, float, int]], hud: 
 
     polys = [(np.round(pts * [w, h]).astype(np.int32), result, circ, tid) for pts, result, circ, tid in items]
 
-    # 불량 영역은 반투명으로 채운다
-    overlay = img.copy()
+    # 불량 영역은 반투명으로 채운다. 화면 전체가 아니라 과자를 감싸는 사각형 안만 합성해야 빠르다
     for px, result, _, _ in polys:
         if result == "FAIL":
-            cv2.fillPoly(overlay, [px], COLORS["FAIL"])
-    img = cv2.addWeighted(overlay, 0.35, img, 0.65, 0)
+            tint(img, px, COLORS["FAIL"], 0.35)
 
     sx = int(SCAN_X * w)
-    cv2.line(img, (sx, 0), (sx, h), SCAN_COLOR, 1, cv2.LINE_AA)
+    cv2.line(img, (sx, 0), (sx, h), SCAN_COLOR, 1)
 
     for px, result, circ, tid in polys:
         color = COLORS[result]
-        cv2.polylines(img, [px], True, color, thick + 1, cv2.LINE_AA)
+        cv2.polylines(img, [px], True, color, thick + 1)  # 안티앨리어싱(LINE_AA)은 5배 느리고 두께가 있어 눈으로 차이가 거의 없다
         text = f"#{tid} {result} {circ:.2f}"
         (tw, th), _ = cv2.getTextSize(text, cv2.FONT_HERSHEY_SIMPLEX, scale, thick)
         x0, y0 = px.min(axis=0)
