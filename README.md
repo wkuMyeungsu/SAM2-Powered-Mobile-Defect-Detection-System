@@ -13,7 +13,7 @@ SAM 2 및 모바일 스트리밍 기반 실시간 불량 과자 검출 시스템
 | `services/inference/` | SAM 2 추론 (C3) | 대희 | 8003 | `http://inference:8003` |
 | `services/visualizer/` | 영상 재수신 (C4) | 도은 | 8004 | `http://visualizer:8004` |
 
-`docs/contracts/`에는 파트 사이에 주고받는 데이터 형식을 적는다.
+`docs/contracts/`에는 파트 사이에 주고받는 데이터 형식을 적는다. 컨테이너 간 연결 구조는 `docs/architecture.html`.
 
 ## 실행
 
