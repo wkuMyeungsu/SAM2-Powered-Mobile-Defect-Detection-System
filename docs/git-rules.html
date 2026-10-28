@@ -1,0 +1,407 @@
+<!doctype html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Git 브랜치 운용 지침서</title>
+<style>
+:root{--bg:#eceff1;--paper:#fff;--ink:#111;--muted:#555;--rule:#111;--thin:#b8bec4;--code:#f3f4f5;--focus:#1f4e79}
+@media (prefers-color-scheme:dark){:root{--bg:#0b0d0f;--paper:#14181c;--ink:#e8eaec;--muted:#9aa3ab;--rule:#e8eaec;--thin:#3a4249;--code:#1d2328;--focus:#7fb4e8}}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:var(--ink);font:15px/1.7 system-ui,"Malgun Gothic",sans-serif}
+.doc{max-width:860px;margin:24px auto;background:var(--paper);border:2px solid var(--rule);padding:0 0 28px}
+code,pre,.mono{font-family:ui-monospace,Consolas,monospace}
+code{font-size:.9em;background:var(--code);padding:1px 5px;border:1px solid var(--thin)}
+pre{margin:6px 0;padding:9px 14px;background:var(--code);border:1px solid var(--thin);border-left:4px solid var(--rule);overflow-x:auto;font-size:13px;line-height:1.55}
+pre code{background:none;border:0;padding:0;font-size:inherit}
+p{margin:6px 0}
+
+/* 표지 */
+.head{display:grid;grid-template-columns:1fr auto;border-bottom:2px solid var(--rule)}
+.head .t{padding:18px 22px}
+.head .t small{display:block;letter-spacing:.18em;color:var(--muted);font-size:12px}
+.head h1{margin:2px 0 0;font-size:26px}
+.ctl{border-left:2px solid var(--rule);font-size:13px}
+.ctl div{display:grid;grid-template-columns:80px 1fr;border-bottom:1px solid var(--thin)}
+.ctl div:last-child{border-bottom:0}
+.ctl b,.ctl span{padding:4px 10px}
+.ctl b{background:var(--code);font-weight:600}
+.body{padding:0 22px}
+@media (max-width:640px){.head{grid-template-columns:1fr}.ctl{border-left:0;border-top:2px solid var(--rule)}}
+
+/* 탭 */
+.tabs{display:flex;margin:22px 0 0;border-bottom:2px solid var(--rule);overflow-x:auto}
+.tabs button{flex:1;min-width:120px;font:inherit;font-weight:700;text-align:left;padding:7px 12px;margin-right:-2px;border:2px solid var(--rule);border-bottom:0;background:var(--code);color:var(--ink);cursor:pointer}
+.tabs button:last-child{margin-right:0}
+.tabs button span{display:block;font:400 11px ui-monospace,Consolas,monospace;letter-spacing:.12em;color:var(--muted)}
+.tabs button[aria-selected="true"]{background:var(--ink);color:var(--paper)}
+.tabs button[aria-selected="true"] span{color:var(--paper);opacity:.75}
+.tabs button:focus-visible{outline:3px solid var(--focus);outline-offset:-5px}
+[role="tabpanel"][hidden]{display:none}
+.lead{color:var(--muted);margin:10px 0 0}
+
+h2{margin:26px 0 10px;padding:6px 10px;background:var(--ink);color:var(--paper);font-size:16px}
+h2 small{font-weight:400;opacity:.75;margin-left:8px;font-size:12px;letter-spacing:.12em}
+
+/* 표 */
+.tw{overflow-x:auto;margin:8px 0}
+table{border-collapse:collapse;width:100%;font-size:14px}
+th,td{border:1px solid var(--rule);padding:5px 9px;text-align:left;vertical-align:top}
+th{background:var(--code);font-weight:600;white-space:nowrap}
+td.c,th.c{text-align:center}
+
+/* 흐름 */
+.flow{display:flex;flex-wrap:wrap;margin:16px 0 0;font-size:13px}
+.flow .n{border:2px solid var(--rule);padding:6px 10px;text-align:center;min-width:140px;flex:1;font-family:ui-monospace,Consolas,monospace;font-weight:700}
+.flow .ar{align-self:center;padding:0 6px;font-weight:700;text-align:center;font-family:ui-monospace,Consolas,monospace;font-size:11px}
+.flow .ar span{display:block;font-size:20px;line-height:1}
+
+/* 작업 카드 */
+.task{margin:14px 0;border:1px solid var(--rule);break-inside:avoid}
+.task .th{display:grid;grid-template-columns:auto 1fr auto;align-items:center;background:var(--code);border-bottom:1px solid var(--rule)}
+.task .id{padding:5px 12px;font-family:ui-monospace,Consolas,monospace;font-weight:700;background:var(--ink);color:var(--paper)}
+.task .nm{padding:5px 12px;font-weight:700}
+.task .when{padding:5px 12px;font-size:13px;color:var(--muted)}
+.task .in{padding:6px 14px 10px}
+.task ol{margin:4px 0;padding-left:22px}
+.task ol li{padding:2px 0}
+@media (max-width:640px){.task .th{grid-template-columns:auto 1fr}.task .when{grid-column:1/-1;border-top:1px solid var(--thin)}}
+
+/* 흐름 그래프 */
+.graph{overflow-x:auto;margin:12px 0 0;border:1px solid var(--rule);background:var(--code);padding:6px}
+.graph svg{display:block;width:100%;max-width:640px;min-width:520px;height:auto}
+.graph text{font-family:ui-monospace,Consolas,monospace;fill:var(--ink)}
+.graph .halo{stroke:var(--code);stroke-width:4;paint-order:stroke}
+.graph .nd{fill:var(--code)}
+.legend{display:flex;gap:18px;flex-wrap:wrap;color:var(--muted);font-size:13px;margin:8px 0 0}
+.legend svg{vertical-align:-3px}
+
+.end{text-align:center;margin:26px 0 0;letter-spacing:.3em;font-size:12px;color:var(--muted)}
+@media print{body{background:#fff}.doc{margin:0;border:0}.tabs{display:none}[role="tabpanel"][hidden]{display:block}}
+</style>
+</head>
+<body>
+<div class="doc">
+
+<div class="head">
+  <div class="t">
+    <small>BRANCH OPERATION MANUAL</small>
+    <h1>Git 브랜치 운용 지침서</h1>
+  </div>
+  <div class="ctl">
+    <div><b>문서 번호</b><span class="mono">GIT-OPS-001</span></div>
+    <div><b>개정</b><span class="mono">REV 1</span></div>
+    <div><b>시행일</b><span class="mono">2026-10-28</span></div>
+    <div><b>저장소</b><span class="mono">wkuMyeungsu/SAM2-Powered-Mobile-Defect-Detection-System</span></div>
+  </div>
+</div>
+
+<div class="body">
+
+<div class="flow" aria-label="합치는 방향">
+  <div class="n">&lt;태그&gt;/&lt;파트&gt;/&lt;기능&gt;</div>
+  <div class="ar">PR<span>→</span></div>
+  <div class="n">dev</div>
+  <div class="ar">PR<span>→</span></div>
+  <div class="n">main</div>
+</div>
+
+<div class="tabs" role="tablist">
+  <button role="tab" id="b-rules" aria-controls="rules"><span>01 · RULES</span>규칙</button>
+  <button role="tab" id="b-start" aria-controls="start"><span>02 · SETUP</span>시작할 때</button>
+  <button role="tab" id="b-work" aria-controls="work"><span>03 · WORK</span>작업할 때</button>
+  <button role="tab" id="b-merge" aria-controls="merge"><span>04 · RELEASE</span>main에 올릴 때</button>
+  <button role="tab" id="b-flow" aria-controls="flow"><span>05 · EXAMPLE</span>흐름 예시</button>
+</div>
+
+<!-- ============ 01 규칙 ============ -->
+<section role="tabpanel" id="rules" aria-labelledby="b-rules">
+<p class="lead">아래 작업 절차에 나오는 이름과 기준이다. 먼저 한 번 읽는다.</p>
+
+<h2>파트 <small>PARTS</small></h2>
+<div class="tw"><table>
+  <tr><th>파트</th><th>폴더</th><th>컨테이너 주소</th><th>담당</th></tr>
+  <tr><td><code>web</code></td><td><code>web/</code></td><td><code>http://web:8000</code></td><td>명수</td></tr>
+  <tr><td><code>gateway</code></td><td><code>services/gateway/</code></td><td><code>http://gateway:8001</code></td><td>우진</td></tr>
+  <tr><td><code>preprocessing</code></td><td><code>services/preprocessing/</code></td><td><code>http://preprocessing:8002</code></td><td>진아</td></tr>
+  <tr><td><code>inference</code></td><td><code>services/inference/</code></td><td><code>http://inference:8003</code></td><td>대희</td></tr>
+  <tr><td><code>visualizer</code></td><td><code>services/visualizer/</code></td><td><code>http://visualizer:8004</code></td><td>도은</td></tr>
+</table></div>
+
+<h2>브랜치 <small>CONFIGURATION</small></h2>
+<div class="tw"><table>
+  <tr><th>브랜치</th><th>역할</th><th class="c">직접 push</th></tr>
+  <tr><td><code>main</code></td><td>통합 확인이 끝난 최종본</td><td class="c">금지 (PR만)</td></tr>
+  <tr><td><code>dev</code></td><td>모든 파트의 통합·테스트</td><td class="c">금지 (PR만)</td></tr>
+  <tr><td><code>&lt;태그&gt;/&lt;파트&gt;/&lt;기능&gt;</code></td><td>작업 하나. <code>dev</code>에서 만들어 <code>dev</code>로 PR을 올리고, 병합 후 삭제한다.</td><td class="c">허용 (본인 브랜치)</td></tr>
+</table></div>
+
+<h2>태그 <small>TAG</small></h2>
+<div class="tw"><table>
+  <tr><th>태그</th><th>용도</th><th>커밋 타입</th><th>브랜치 예</th></tr>
+  <tr><td><code>feature</code></td><td>새 기능</td><td><code>feat</code></td><td><code>feature/web/qr-page</code></td></tr>
+  <tr><td><code>fix</code></td><td>버그 수정</td><td><code>fix</code></td><td><code>fix/inference/empty-mask</code></td></tr>
+  <tr><td><code>docs</code></td><td>문서</td><td><code>docs</code></td><td><code>docs/gateway/frame-spec</code></td></tr>
+  <tr><td><code>refactor</code></td><td>동작은 그대로 두고 코드 정리</td><td><code>refactor</code></td><td><code>refactor/preprocessing/resize-util</code></td></tr>
+  <tr><td><code>chore</code></td><td>설정·빌드·의존성 등 기타</td><td><code>chore</code></td><td><code>chore/visualizer/dockerfile</code></td></tr>
+</table></div>
+<p>파트는 폴더 이름과 같다: <code>web</code> <code>gateway</code> <code>preprocessing</code> <code>inference</code> <code>visualizer</code>. 여러 파트의 폴더를 함께 바꿔야 하면 파트 자리에 <code>common</code>을 쓰고, 바뀌는 파트의 담당자 모두와 먼저 상의한다.</p>
+<p>브랜치 이름은 항상 <code>태그/파트/기능</code> 세 단계로 만든다. <code>feature/web</code>처럼 두 단계로 끝나는 브랜치를 만들면 git이 <code>feature/web/qr-page</code> 같은 브랜치를 더 이상 만들지 못한다.</p>
+
+<h2>작업 위치 <small>WORKSPACE</small></h2>
+<div class="tw"><table>
+  <tr><th>단위</th><td>파트 1개 = 담당자 1명 = 폴더 1개 = 컨테이너 1개. 포트는 <code>8000 + 파트 번호</code>.</td></tr>
+  <tr><th>작업 범위</th><td>코드·<code>Dockerfile</code>·의존성 파일 모두 <b>내 파트 폴더 안에만</b> 둔다. 다른 파트 폴더는 읽기만 한다.</td></tr>
+  <tr><th>실행</th><td>내 폴더의 <code>Dockerfile</code>로 컨테이너를 만들어 실행한다. 저장소 루트에서 <code>docker compose up --build &lt;파트&gt;</code>. 호스트 PC에 직접 설치해 돌리지 않는다.</td></tr>
+  <tr><th>파트 간 호출</th><td>컨테이너 주소로 HTTP 호출 (예: <code>http://inference:8003</code>). 컨테이너 안의 <code>localhost</code>는 자기 자신이다. 다른 파트 코드를 import하지 않는다.</td></tr>
+  <tr><th>데이터 형식</th><td>파트 사이에 주고받는 형식은 구현 전에 <code>docs/contracts/</code>에 적고 양쪽 담당자가 확인한다.</td></tr>
+  <tr><th>공용 파일</th><td><code>docker-compose.yml</code>, <code>.env.example</code>, <code>README.md</code>, <code>docs/</code>는 저장소 담당자와 상의 후 바꾼다.</td></tr>
+</table></div>
+
+<h2>기록 기준 <small>RECORD</small></h2>
+<div class="tw"><table>
+  <tr><th>브랜치 이름</th><td>영문 소문자와 하이픈만. 이름만 보고 기능을 알 수 있게.</td></tr>
+  <tr><th>커밋 메시지</th><td><code>&lt;타입&gt;(&lt;파트&gt;): &lt;요약&gt;</code> — 타입은 태그 표의 커밋 타입.<br>예: <code>feat(web): QR 접속 화면 추가</code></td></tr>
+  <tr><th>커밋 단위</th><td>목적 하나, 동작하는 상태로. <code>git add .</code> 대신 파일을 지정하고, 커밋 전에 <code>git status</code>로 내 폴더 밖 파일이 없는지 확인한다.</td></tr>
+  <tr><th>PR 제목</th><td>커밋 메시지와 같은 형식. 본문에 무엇을 바꿨는지, 어떻게 확인했는지.</td></tr>
+  <tr><th>PR 병합 방식</th><td><b>Create a merge commit</b> 만 사용. (Squash, Rebase 금지)</td></tr>
+</table></div>
+
+<h2>금지 사항 <small>PROHIBITED</small></h2>
+<div class="tw"><table>
+  <tr><th>하지 않는 일</th><th>대신 하는 일</th></tr>
+  <tr><td><code>main</code>, <code>dev</code>에 직접 commit·push</td><td>작업 브랜치에서 커밋하고 PR로 합친다.</td></tr>
+  <tr><td>내 파트 폴더 밖의 파일 수정</td><td>공용 파일은 저장소 담당자와 상의한 뒤 바꾼다. 다른 파트 폴더는 그 담당자에게 요청한다.</td></tr>
+  <tr><td>호스트 PC에 의존성을 설치해 실행</td><td>내 폴더의 <code>Dockerfile</code>에 적고 컨테이너로 실행한다.</td></tr>
+  <tr><td><code>git push --force</code>, <code>git reset --hard</code> 등 이력을 지우는 명령</td><td>잘못 올린 커밋은 <code>git revert</code>로 되돌리는 새 커밋을 만든다.</td></tr>
+  <tr><td>다른 사람의 브랜치에 push</td><td>내 브랜치에서 PR을 올리거나 그 사람에게 요청한다.</td></tr>
+  <tr><td>비밀키, 토큰, <code>.env</code>, 모델 가중치(<code>*.pt</code> <code>*.onnx</code>) 커밋</td><td>값은 <code>.env</code>에만 두고 <code>.env.example</code>에는 이름만 적는다. 이미 올렸다면 해당 키를 즉시 폐기하고 재발급한다.</td></tr>
+</table></div>
+</section>
+
+<!-- ============ 02 시작할 때 ============ -->
+<section role="tabpanel" id="start" aria-labelledby="b-start" hidden>
+<p class="lead">처음 한 번만 한다. 저장소 담당자가 ADMIN을 끝낸 뒤에 팀원이 SETUP을 한다.</p>
+
+<div class="task">
+  <div class="th"><div class="id">ADMIN</div><div class="nm">저장소 구성</div><div class="when">저장소 담당자 1회 · SETUP보다 먼저</div></div>
+  <div class="in">
+<ol>
+  <li>GitHub에 빈 저장소를 만들고, 로컬의 <code>main</code>과 <code>dev</code>를 올린다.
+<pre><code>git remote add origin https://github.com/wkuMyeungsu/SAM2-Powered-Mobile-Defect-Detection-System.git
+git push -u origin main dev</code></pre></li>
+  <li>GitHub에서 설정한다.
+<div class="tw"><table>
+  <tr><th>GitHub 설정</th><th>값</th></tr>
+  <tr><td>Settings → Collaborators</td><td>팀원 GitHub 계정 초대</td></tr>
+  <tr><td>Settings → Branches → 보호 규칙 대상</td><td><code>main</code>, <code>dev</code></td></tr>
+  <tr><td>Require a pull request before merging</td><td>켬 · 승인 1명</td></tr>
+  <tr><td>Allow force pushes / Allow deletions</td><td>끔</td></tr>
+  <tr><td>Settings → General → Pull Requests</td><td><b>Allow merge commits</b>만 켬 (Squash, Rebase는 끔)</td></tr>
+  <tr><td>Settings → General → Automatically delete head branches</td><td>끔. 이 설정은 병합된 PR의 head 브랜치를 자동으로 지우는데, dev → main PR의 head 브랜치는 <code>dev</code>다. 작업 브랜치는 PR 병합 때 <b>Delete branch</b>를 눌러 직접 지운다.</td></tr>
+</table></div></li>
+</ol>
+  </div>
+</div>
+
+<div class="task">
+  <div class="th"><div class="id">SETUP</div><div class="nm">저장소 처음 받기</div><div class="when">팀원 각자 1회</div></div>
+  <div class="in">
+<ol>
+  <li>GitHub 메일 또는 알림에서 저장소 초대(Collaborator)를 수락한다.</li>
+  <li>저장소를 받는다.
+<pre><code>git clone https://github.com/wkuMyeungsu/SAM2-Powered-Mobile-Defect-Detection-System.git
+cd SAM2-Powered-Mobile-Defect-Detection-System</code></pre></li>
+  <li>작성자 정보와 pull 방식을 설정한다.
+<pre><code>git config user.name "이름"
+git config user.email "GitHub 계정 이메일"
+git config pull.rebase false</code></pre></li>
+  <li>브랜치 목록에 <code>main</code>과 <code>dev</code>가 있는지 확인한다.
+<pre><code>git branch -a</code></pre></li>
+  <li>Docker Desktop을 실행한 뒤, 내 파트 컨테이너가 뜨는지 확인한다. 명령의 <code>web</code> 자리에는 규칙 탭 파트 표의 내 파트 이름을 쓴다. <code>docker compose ps</code>에서 상태가 <code>healthy</code>이면 완료다.
+<pre><code>docker compose up --build -d web
+docker compose ps</code></pre></li>
+</ol>
+  </div>
+</div>
+</section>
+
+<!-- ============ 03 작업할 때 ============ -->
+<section role="tabpanel" id="work" aria-labelledby="b-work" hidden>
+<p class="lead">팀원 누구나. 기능·수정 하나마다 TASK 0 → TASK 1을 반복한다.</p>
+
+<div class="task">
+  <div class="th"><div class="id">TASK 0</div><div class="nm">작업 브랜치 만들고 커밋하기</div><div class="when">작업 시작 시</div></div>
+  <div class="in">
+<ol>
+  <li>최신 <code>dev</code>에서 작업 브랜치를 만든다. 이름은 규칙 탭의 태그 표에 따라 <code>&lt;태그&gt;/&lt;파트&gt;/&lt;기능&gt;</code>으로 짓는다.
+<pre><code>git switch dev &amp;&amp; git pull
+git switch -c feature/web/qr-page</code></pre></li>
+  <li>내 파트 폴더(예: <code>web/</code>) 안의 파일만 고치고, 컨테이너로 실행해 확인한다.
+<pre><code>docker compose up --build web</code></pre></li>
+  <li>바뀐 파일을 하나씩 지정해 커밋한다. 커밋 전에 <code>git status</code>로 내 폴더 밖 파일이 목록에 없는지 확인한다.
+<pre><code>git status
+git add web/index.html
+git commit -m "feat(web): QR 접속 화면 추가"</code></pre></li>
+  <li>원격에 올린다. 처음 올릴 때만 <code>-u origin &lt;브랜치&gt;</code>를 붙이고, 그 뒤에는 <code>git push</code>만 쓴다.
+<pre><code>git push -u origin feature/web/qr-page</code></pre></li>
+</ol>
+  </div>
+</div>
+
+<div class="task">
+  <div class="th"><div class="id">TASK 1</div><div class="nm">작업 → dev (PR)</div><div class="when">기능·수정 하나 끝날 때마다</div></div>
+  <div class="in">
+<ol>
+  <li>PR을 올리기 전에 dev의 최신 내용을 내 브랜치로 받아와 충돌을 내 PC에서 푼다.
+<pre><code>git pull origin dev
+git push</code></pre>
+충돌이 나면 충돌 파일에서 <code>&lt;&lt;&lt;&lt;&lt;&lt;&lt;</code>부터 <code>&gt;&gt;&gt;&gt;&gt;&gt;&gt;</code>까지를 남길 내용으로 고쳐 쓰고 마커 줄을 지운다. 그 뒤 <code>git add &lt;파일&gt;</code>, <code>git commit</code>, <code>git push</code> 순서로 실행한다. 병합을 취소하려면 <code>git merge --abort</code>를 실행한다.</li>
+  <li>GitHub에서 PR을 만든다. <b>base</b>는 <code>dev</code>, <b>compare</b>는 내 브랜치(<code>feature/web/qr-page</code>)로 지정한다. 새 PR 화면의 base 기본값이 <code>main</code>이면 <code>dev</code>로 바꾼 뒤에 Create pull request를 누른다.</li>
+  <li>리뷰어 1명이 승인하면 <b>Create a merge commit</b>으로 병합하고, 이어서 <b>Delete branch</b>를 눌러 원격의 작업 브랜치를 지운다.</li>
+  <li>내 PC의 작업 브랜치를 지운다.
+<pre><code>git switch dev &amp;&amp; git pull
+git branch -d feature/web/qr-page</code></pre></li>
+</ol>
+  </div>
+</div>
+</section>
+
+<!-- ============ 04 main에 올릴 때 ============ -->
+<section role="tabpanel" id="merge" aria-labelledby="b-merge" hidden>
+<p class="lead">저장소 담당자. dev에서 전체가 동작하는 것을 확인한 뒤에만 한다.</p>
+
+<div class="task">
+  <div class="th"><div class="id">TASK 2</div><div class="nm">dev → main (PR)</div><div class="when">저장소 담당자 · dev 테스트 통과 후</div></div>
+  <div class="in">
+<ol>
+  <li><code>dev</code>를 받아 전체를 실행하고 모든 파트가 <code>healthy</code>인지, 화면이 열리는지 확인한다.
+<pre><code>git switch dev &amp;&amp; git pull
+docker compose up --build</code></pre>
+문제가 하나라도 나오면 이 TASK를 중단한다. <code>fix/&lt;파트&gt;/&lt;내용&gt;</code> 브랜치를 만들어 TASK 1로 <code>dev</code>에 먼저 고친 뒤, 이 TASK를 처음부터 다시 한다. main에는 문제가 해결된 dev만 올린다.</li>
+  <li>GitHub에서 PR을 만든다. <b>base</b>는 <code>main</code>, <b>compare</b>는 <code>dev</code>로 지정한다.</li>
+  <li>리뷰어 1명이 승인하면 <b>Create a merge commit</b>으로 병합한다. <b>Delete branch</b>는 누르지 않는다. <code>dev</code>는 다음 작업에도 계속 쓰는 브랜치다.</li>
+</ol>
+<p>병합 직후 GitHub이 "dev is behind main"이라고 표시한다. 병합 커밋 하나가 main에만 있다는 뜻이고, 다음 dev → main PR은 그대로 만들 수 있다. 이 표시를 없애려고 main을 dev에 병합하지 않는다.</p>
+  </div>
+</div>
+</section>
+
+<!-- ============ 05 흐름 예시 ============ -->
+<section role="tabpanel" id="flow" aria-labelledby="b-flow" hidden>
+<p class="lead">위에서 아래로 시간이 흐르고, 한 줄이 사건 하나다. 작업 브랜치가 dev에 모이고 dev → main으로 올라간 뒤 같은 순서를 반복한다. 설명 앞의 검은 번호는 그 사건이 속한 TASK 번호다.</p>
+<div class="graph"><svg id="g" viewBox="0 0 560 590" role="img" aria-label="브랜치 병합 흐름 그래프"></svg></div>
+<div class="legend">
+  <span><svg width="16" height="16"><circle cx="8" cy="8" r="5" fill="currentColor"/></svg> 커밋</span>
+  <span><svg width="16" height="16"><circle cx="8" cy="8" r="6" fill="none" stroke="currentColor" stroke-width="3"/></svg> PR 병합 커밋</span>
+  <span><svg width="26" height="16"><line x1="1" y1="8" x2="25" y2="8" stroke="currentColor" stroke-width="2.5" stroke-dasharray="5 4"/></svg> dev 받아오기 (TASK 1의 첫 단계)</span>
+</div>
+</section>
+
+<p class="end">— 끝 · END OF DOCUMENT —</p>
+
+</div>
+</div>
+
+<script>
+// 흐름 그래프 데이터: 한 줄에 사건 하나, 위에서 아래로 시간이 흐른다.
+// from: 이 브랜치를 만든 지점, merge: 이 PR로 들어온 브랜치의 마지막 커밋, sync: dev를 받아온 지점
+const COL = {main: 0, dev: 1, web: 2, inf: 3, pre: 4, fix: 2};
+const C = {main: '#ef4444', dev: '#f59e0b', web: '#3b82f6', inf: '#a855f7', pre: '#22c55e', fix: '#14b8a6'};
+const RANK = {main: 0, dev: 1, web: 2, inf: 2, pre: 2, fix: 2};
+const ROWS = [
+  {id: 'M0', lane: 'main', name: 'main'},
+  {id: 'D0', lane: 'dev', name: 'dev', note: 'main에서 생성', from: 'M0'},
+  {id: 'W1', lane: 'web', name: 'feature/web/dashboard-layout', note: 'dev에서 생성', from: 'D0', task: 0},
+  {id: 'I1', lane: 'inf', name: 'feature/inference/circularity', note: 'dev에서 생성', from: 'D0', task: 0},
+  {id: 'P1', lane: 'pre', name: 'feature/preprocessing/resize', note: 'dev에서 생성', from: 'D0', task: 0},
+  {id: 'W2', lane: 'web', note: 'feat(web): 레이아웃 뼈대'},
+  {id: 'I2', lane: 'inf', note: 'feat(inference): 원형도 계산'},
+  {id: 'P2', lane: 'pre', note: 'feat(preprocessing): 프레임 리사이즈'},
+  {id: 'W3', lane: 'web', note: 'feat(web): 판정 결과 표'},
+  {id: 'Dw', lane: 'dev', note: 'PR 병합 ← feature/web/dashboard-layout', merge: 'W3', task: 1},
+  {id: 'I3', lane: 'inf', note: 'feat(inference): 불량 판정 기준값'},
+  {id: 'Di', lane: 'dev', note: 'PR 병합 ← feature/inference/circularity', merge: 'I3', task: 1},
+  {id: 'Ps', lane: 'pre', note: 'git pull origin dev — 충돌은 내 PC에서 해결', sync: 'Di', task: 1},
+  {id: 'Dp', lane: 'dev', note: 'PR 병합 ← feature/preprocessing/resize', merge: 'Ps', task: 1},
+  {id: 'M1', lane: 'main', note: 'PR 병합 ← dev', merge: 'Dp', task: 2},
+  {divider: '2회차 — 같은 순서 반복'},
+  {id: 'F1', lane: 'fix', name: 'fix/web/qr-error', note: 'dev에서 생성', from: 'Dp', task: 0},
+  {id: 'F2', lane: 'fix', note: 'fix(web): QR 오류 수정'},
+  {id: 'D2', lane: 'dev', note: 'PR 병합 ← fix/web/qr-error', merge: 'F2', task: 1},
+  {id: 'M2', lane: 'main', note: 'PR 병합 ← dev', merge: 'D2', task: 2},
+];
+
+const H = 28, TOP = 36, LX = c => 24 + 30 * c, BADGE = 184, TEXT = 202, W = 560;
+const at = {};
+ROWS.forEach((r, i) => { if (r.id) at[r.id] = {x: LX(COL[r.lane]), y: TOP + H * i, lane: r.lane}; });
+const color = (a, b) => C[RANK[b.lane] >= RANK[a.lane] ? b.lane : a.lane];
+
+let s = `<text x="${TEXT}" y="16" font-size="12" style="fill:var(--muted)">1회차</text>`;
+
+// 같은 브랜치의 커밋끼리 세로선
+const last = {};
+for (const r of ROWS) {
+  if (!r.id) continue;
+  const p = last[r.lane], q = at[r.id];
+  if (p) s += `<line x1="${q.x}" y1="${p.y}" x2="${q.x}" y2="${q.y}" stroke="${C[r.lane]}" stroke-width="2.5"/>`;
+  last[r.lane] = q;
+}
+
+// 갈라지기: 만든 지점 바로 아래에서 휘어 새 레인으로 간 뒤 세로로 내려간다
+const branchPath = (p, q) => `M${p.x} ${p.y}C${p.x} ${p.y + H * .6} ${q.x} ${p.y + H * .4} ${q.x} ${p.y + H}L${q.x} ${q.y}`;
+// 합쳐지기: 들어오는 레인에서 세로로 내려온 뒤 병합 지점 바로 위에서 휜다
+const mergePath = (p, q) => `M${p.x} ${p.y}L${p.x} ${q.y - H}C${p.x} ${q.y - H * .4} ${q.x} ${q.y - H * .6} ${q.x} ${q.y}`;
+
+for (const r of ROWS) {
+  if (!r.id) continue;
+  const q = at[r.id];
+  if (r.from) { const p = at[r.from]; s += `<path d="${branchPath(p, q)}" fill="none" stroke="${color(p, q)}" stroke-width="2.5"/>`; }
+  if (r.sync) { const p = at[r.sync]; s += `<path d="${branchPath(p, q)}" fill="none" stroke="${color(p, q)}" stroke-width="2.5" stroke-dasharray="5 4"/>`; }
+  if (r.merge) { const p = at[r.merge]; s += `<path d="${mergePath(p, q)}" fill="none" stroke="${color(p, q)}" stroke-width="2.5"/>`; }
+}
+
+ROWS.forEach((r, i) => {
+  const y = TOP + H * i;
+  if (r.divider) {
+    s += `<line x1="8" y1="${y - 4}" x2="${W - 8}" y2="${y - 4}" stroke="var(--thin)" stroke-dasharray="4 4"/>`
+       + `<text x="${TEXT}" y="${y + 12}" font-size="12" style="fill:var(--muted)">${r.divider}</text>`;
+    return;
+  }
+  const {x} = at[r.id], c = C[r.lane];
+  s += r.merge || r.sync
+    ? `<circle class="nd" cx="${x}" cy="${y}" r="6.5" stroke="${c}" stroke-width="3"/>`
+    : `<circle cx="${x}" cy="${y}" r="${r.lane === 'main' || r.lane === 'dev' ? 7 : 5.5}" fill="${c}"/>`;
+  if (r.task !== undefined) {
+    s += `<circle cx="${BADGE}" cy="${y}" r="9" style="fill:var(--ink)"/>`
+       + `<text x="${BADGE}" y="${y + 4}" font-size="12" font-weight="700" text-anchor="middle" style="fill:var(--paper)">${r.task}</text>`;
+  }
+  s += `<text x="${TEXT}" y="${y + 4}" font-size="12">`
+     + (r.name ? `<tspan font-weight="700" style="fill:${c}">${r.name}</tspan>${r.note ? ' ' : ''}` : '')
+     + (r.note ? `<tspan style="fill:var(--muted)">${r.note}</tspan>` : '')
+     + `</text>`;
+});
+
+document.getElementById('g').innerHTML = s;
+
+const tabs =[...document.querySelectorAll('[role="tab"]')];
+function show(id) {
+  for (const t of tabs) {
+    const on = t.getAttribute('aria-controls') === id;
+    t.setAttribute('aria-selected', on);
+    document.getElementById(t.getAttribute('aria-controls')).hidden = !on;
+  }
+}
+for (const t of tabs) {
+  t.addEventListener('click', () => {
+    const id = t.getAttribute('aria-controls');
+    show(id);
+    history.replaceState(null, '', '#' + id);
+  });
+}
+// 주소의 #work 같은 해시로 탭을 바로 열 수 있다
+const first = location.hash.slice(1);
+show(tabs.some(t => t.getAttribute('aria-controls') === first) ? first : tabs[0].getAttribute('aria-controls'));
+</script>
+</body>
+</html>

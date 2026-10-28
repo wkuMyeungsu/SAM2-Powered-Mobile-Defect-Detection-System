@@ -15,8 +15,6 @@ SAM 2 및 모바일 스트리밍 기반 실시간 불량 과자 검출 시스템
 
 `docs/contracts/`에는 파트 사이에 주고받는 데이터 형식을 적는다.
 
-포트는 `8000 + 파트 번호`로 정했고, 호스트 포트와 컨테이너 포트가 같다.
-
 ## 실행
 
 필요한 것: Docker Desktop (실행 중일 것), Docker Compose 2.24 이상.
@@ -35,7 +33,10 @@ docker compose ps                      # 상태 (healthy 확인)
 ## 브랜치
 
 - `main`: 최종본. `dev`: 통합. 둘 다 직접 push하지 않고 PR로만 합친다.
-- 작업 브랜치: `feature/<파트>/<기능>` — 파트는 `web` `gateway` `preprocessing` `inference` `visualizer`.
-  예: `feature/preprocessing/resize`, `feature/web/qr-page`
-- `feature/*`는 `dev`에서 만들고 `dev`로 PR을 올린다.
+- 작업 브랜치: `<태그>/<파트>/<기능>` — 태그는 `feature` `fix` `docs` `refactor` `chore`, 파트는 `web` `gateway` `preprocessing` `inference` `visualizer`.
+  예: `feature/web/qr-page`, `fix/inference/empty-mask`
+- 작업 브랜치는 `dev`에서 만들고 `dev`로 PR을 올린다. 병합 후 삭제한다.
+- 커밋 메시지: `<타입>(<파트>): <요약>`. 예: `feat(web): QR 접속 화면 추가`
+- PR 병합은 Create a merge commit만 사용한다.
 - `.env`, 비밀키, 모델 가중치(`*.pt` `*.onnx`)는 커밋하지 않는다.
+- 전체 절차는 `docs/git-rules.html`.
