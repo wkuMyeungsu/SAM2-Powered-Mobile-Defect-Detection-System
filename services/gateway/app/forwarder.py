@@ -1,12 +1,13 @@
-"""휴대폰 프레임을 처리 단계로 보내는 일 (팀 구조도 ②③).
+"""휴대폰 프레임을 preprocessing으로 보내는 일 (팀 구조도 ②).
 
-프레임 1장마다 차례로:
-  1. preprocessing  POST /preprocess  (JPEG 본문) → 전처리 이미지·후보 영역 JSON
-  2. inference      POST /infer       (1의 JSON + frame_id·timestamp·원본 이미지)
-     inference가 visualizer로 보내고, visualizer가 gateway POST /result로 돌려준다 (main.py).
+preprocessing POST /frame이 전처리 뒤 inference로 넘기고(③), inference → visualizer → gateway POST /result로
+결과가 돌아온다(④⑤). gateway는 /frame의 202 응답(보통 수십 ms)만 기다린다.
+형식: services/preprocessing/contracts/gateway-preprocessing.md
 
-세션마다 한 번에 1장만 처리한다. 처리하는 동안 휴대폰이 보낸 프레임은 가장 최신 1장만 남고,
-처리가 끝나면 그 1장을 보낸다. 그래서 SAM 2가 느려도 결과가 밀리지 않는다.
+세션마다 한 번에 1장만 보낸다. 응답을 기다리는 동안 휴대폰이 보낸 프레임은 가장 최신 1장만 남는다.
+inference가 느린 것은 preprocessing이 최신 프레임만 남겨 처리한다.
+
+GATEWAY_FORWARD_URL을 /preprocess로 바꾸면(확인용) 전처리 결과를 점검 화면에 보여 준다.
 """
 from __future__ import annotations
 
@@ -91,52 +92,37 @@ class Forwarder:
             }, stage="echo")
             return
 
-        pre = await self._preprocess(session, frame_id, frame, timestamp)
-        if not self.settings.inference_url:
-            # inference를 쓰지 않으면 전처리 결과를 점검 화면에 보여 준다
-            await send_stage_result(session, frame_id, pre["image"], {k: v for k, v in pre.items() if k != "image"}, "preprocessing")
-            return
-        try:
-            await self._infer(session, frame_id, frame, timestamp, pre)
-        except StageError:
-            # inference가 없거나 실패해도 전처리 결과는 점검 화면에 보여 준다
-            await send_stage_result(session, frame_id, pre["image"], {k: v for k, v in pre.items() if k != "image"}, "preprocessing")
-            raise
-
-    async def _preprocess(self, session: Session, frame_id: int, frame: bytes, timestamp: float) -> dict:
         url = self.settings.forward_url
-        headers = {"Content-Type": "image/jpeg", "X-Frame-Id": str(frame_id), "X-Session-Id": session.id, "X-Timestamp": f"{timestamp:.3f}"}
+        headers = {"Content-Type": "image/jpeg", "X-Frame-Id": str(frame_id), "X-Timestamp": f"{timestamp:.3f}", "X-Session-Id": session.id}
         try:
             r = await self.client.post(url, content=frame, headers=headers, timeout=self.settings.forward_timeout)
         except httpx.HTTPError as e:
             raise StageError(f"preprocessing 연결 실패 ({type(e).__name__})") from e
-        if r.status_code != 200:
+        if not r.is_success:
             raise StageError(f"preprocessing 응답 {r.status_code}: {r.text[:120]}")
         try:
             body = r.json()
-            if not isinstance(body.get("image"), str):
-                raise ValueError("image 없음")
-        except ValueError as e:
-            raise StageError(f"preprocessing 응답 형식 오류: {e}") from e
-        return body
+        except ValueError:
+            body = {}
+        if not isinstance(body, dict):
+            body = {}
 
-    async def _infer(self, session: Session, frame_id: int, frame: bytes, timestamp: float, pre: dict) -> None:
-        """inference /infer는 preprocessing 응답을 그대로 받는다. frame_id·timestamp·원본 이미지를 덧붙인다."""
-        body = {**pre, "frame_id": str(frame_id), "timestamp": timestamp, "original_image": b64(frame)}
-        try:
-            r = await self.client.post(self.settings.inference_url, json=body, timeout=self.settings.inference_timeout)
-        except httpx.HTTPError as e:
-            raise StageError(f"inference 연결 실패 ({type(e).__name__})") from e
-        if r.status_code == 503:  # 이전 프레임을 처리 중: 이 프레임은 버리고 다음 최신 프레임을 보낸다
-            session.inference_busy += 1
-            return
-        if not r.is_success:
-            raise StageError(f"inference 응답 {r.status_code}: {r.text[:120]}")
+        status = body.get("status")
+        if status:
+            session.stage_status = status
+            if status == "replaced":
+                session.replaced += 1
+            elif status == "disabled":
+                self._record_error(session, "preprocessing이 inference로 보내지 않음 (preprocessing의 INFERENCE_URL이 비어 있음)", count=False)
+        if isinstance(body.get("image"), str):
+            # /preprocess(확인용) 응답: 전처리 결과를 점검 화면에 보여 준다
+            await send_stage_result(session, frame_id, body["image"], {k: v for k, v in body.items() if k not in ("image", "original_image")}, "preprocessing")
 
-    def _record_error(self, session: Session, message: str) -> None:
-        session.forward_errors += 1
+    def _record_error(self, session: Session, message: str, count: bool = True) -> None:
+        if count:
+            session.forward_errors += 1
         session.last_error = message
         now = time.monotonic()
         if now - self._last_log.get(message, -LOG_EVERY) >= LOG_EVERY:
             self._last_log[message] = now
-            log.warning("[%s] 프레임 처리 실패: %s (같은 오류는 %d초마다 기록)", session.id, message, int(LOG_EVERY))
+            log.warning("[%s] %s (같은 내용은 %d초마다 기록)", session.id, message, int(LOG_EVERY))

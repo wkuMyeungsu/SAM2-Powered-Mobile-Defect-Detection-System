@@ -80,7 +80,7 @@
         <dt>처리로 보낸 프레임</dt><dd id="forwarded">0</dd>
         <dt>돌아온 결과</dt><dd id="results">0</dd>
         <dt>전달 실패</dt><dd id="errors">0</dd>
-        <dt>추론이 바빠 건너뜀</dt><dd id="busy">0</dd>
+        <dt>추론 대기 중 최신으로 교체</dt><dd id="replaced">0</dd>
       </dl>
       <p class="error" id="lastError" hidden></p>
     </section>
@@ -163,7 +163,7 @@
   function showStatus(s) {
     tone($("phone"), s.phone_connected ? "휴대폰 연결됨" : "휴대폰 연결 안 됨", s.phone_connected ? "ok" : "");
     $("received").textContent = s.frames_received; $("forwarded").textContent = s.forwarded;
-    $("results").textContent = s.results; $("errors").textContent = s.forward_errors; $("busy").textContent = s.inference_busy;
+    $("results").textContent = s.results; $("errors").textContent = s.forward_errors; $("replaced").textContent = s.replaced;
     $("lastError").hidden = !s.last_error; $("lastError").textContent = s.last_error ? `최근 오류: ${s.last_error}` : "";
   }
 

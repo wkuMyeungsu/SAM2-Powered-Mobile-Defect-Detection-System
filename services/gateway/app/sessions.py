@@ -96,7 +96,8 @@ class Session:
     frames_received: int = 0
     frames_dropped: int = 0  # JPEG가 아니거나 너무 커서 버린 수
     forwarded: int = 0  # 처리 단계로 보낸 수
-    inference_busy: int = 0  # inference가 이전 프레임을 처리 중이라 건너뛴 수
+    replaced: int = 0  # preprocessing이 inference 대기 중이던 이전 프레임을 이 프레임으로 바꾼 수 (정상)
+    stage_status: str | None = None  # preprocessing /frame의 마지막 status (queued · replaced · disabled)
     results: int = 0
     forward_errors: int = 0
     last_error: str | None = None
@@ -114,7 +115,8 @@ class Session:
             "frames_received": self.frames_received,
             "frames_dropped": self.frames_dropped,
             "forwarded": self.forwarded,
-            "inference_busy": self.inference_busy,
+            "replaced": self.replaced,
+            "stage_status": self.stage_status,
             "results": self.results,
             "forward_errors": self.forward_errors,
             "last_error": self.last_error,

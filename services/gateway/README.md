@@ -2,25 +2,22 @@
 
 - 담당: 우진
 - 컨테이너 주소: `http://gateway:8001` (호스트 포트 8001)
-- 팀 구조도(`docs/architecture.html`)의 ① ② ③ ⑤ ⑥ 연결을 맡는다.
+- 팀 구조도(`docs/architecture.html`)의 ① ② ⑤ ⑥ 연결을 맡는다. ③ ④는 preprocessing → inference → visualizer가 이어서 보낸다.
 
 ## 하는 일
 
 ```
-휴대폰 ─①(QR 접속, WebSocket JPEG)─▶ gateway ─②─▶ preprocessing (POST /preprocess, 응답으로 전처리 결과)
-                                        │
-                                        └─③─▶ inference (POST /infer) ─④─▶ visualizer ─⑤(POST /result)─▶ gateway
-                                                                                                         │
-web 대시보드 ◀──────────────⑥(WebSocket /ws/view, visualizer JSON 그대로)─────────────────────────────────┘
+휴대폰 ─①(QR 접속, WebSocket JPEG)─▶ gateway ─②(POST /frame)─▶ preprocessing ─③─▶ inference ─④─▶ visualizer
+                                         ▲                                                              │
+web 대시보드 ◀──⑥(WebSocket /ws/view)────┴─────────────────────⑤(POST /result)──────────────────────────┘
 ```
 
 1. 휴대폰이 QR 주소로 들어와 카메라 프레임(JPEG)을 초당 5장 보낸다. 휴대폰 카메라는 HTTPS 주소에서만 열리므로, 컨테이너 안에서 cloudflared 임시 터널로 공개 HTTPS 주소를 만든다 (계정·설정 필요 없음).
 2. 프레임마다 `frame_id`와 받은 시각 `timestamp`(unix 초)를 붙인다. `frame_id`는 gateway 전체에서 1씩 늘고, 시작값을 시각에서 정해서 gateway를 다시 켜도 작아지지 않는다 (visualizer는 번호가 작아진 프레임을 오래된 것으로 보고 버린다).
-3. 프레임 1장을 preprocessing에 보내고, 그 응답에 `frame_id`·`timestamp`·원본 이미지를 덧붙여 inference에 보낸다.
-4. 처리하는 동안 휴대폰이 보낸 프레임은 가장 최신 1장만 남는다. 처리가 끝나면 그 1장을 보낸다. SAM 2가 느려도 결과가 밀리지 않는다. inference가 `503`(바쁨)이면 그 프레임은 건너뛴다.
-5. visualizer가 `POST /result`로 보낸 결과를 web 대시보드(`/ws/view`)에 그대로 보낸다.
+3. 프레임을 preprocessing `POST /frame`에 JPEG 그대로 보낸다 (`X-Frame-Id`, `X-Timestamp` 헤더). preprocessing은 전처리 뒤 inference로 넘기고 바로 `202`로 답한다. 세션마다 한 번에 1장만 보내고, 응답을 기다리는 동안 들어온 프레임은 가장 최신 1장만 남긴다. inference가 느린 것은 preprocessing이 최신 프레임만 남겨 처리한다.
+4. visualizer가 `POST /result`로 보낸 결과를 web 대시보드(`/ws/view`)에 그대로 보낸다.
 
-형식: `docs/contracts/frame-input.md`(①), `preprocessing-input.md`(②), `inference-input.md`(③), `result-return.md`(⑤⑥).
+형식: `docs/contracts/frame-input.md`(①), `services/preprocessing/contracts/gateway-preprocessing.md`(②), `docs/contracts/result-return.md`(⑤⑥).
 
 ## 실행
 
@@ -32,7 +29,7 @@ docker compose up --build gateway preprocessing inference visualizer web
 - 공개 주소는 시작 후 몇 초 뒤 생긴다. 그 전에는 QR 주소가 `503`을 돌려준다. `/health`의 `tunnel.status`가 `ready`가 되면 된다.
 - 휴대폰 없이: 점검 화면의 **이 PC에서 촬영 화면 열기**로 PC 웹캠을 쓴다 (`localhost`는 HTTPS 없이도 카메라가 열린다).
 - 다른 파트 없이: 루트 `.env`에 `GATEWAY_FORWARD_MODE=echo`를 넣으면 받은 프레임을 visualizer 결과 형식으로 바로 돌려준다. web 화면을 만들 때 쓴다.
-- inference 없이: `GATEWAY_INFERENCE_URL=`(빈 값)으로 두면 점검 화면에 전처리 이미지와 후보 영역 상자가 나온다. inference가 꺼져 있어 실패할 때도 점검 화면에는 전처리 결과를 보여 준다.
+- 전처리 결과만 확인: `GATEWAY_FORWARD_URL=http://preprocessing:8002/preprocess`로 두면 점검 화면에 전처리 이미지와 후보 영역 상자가 나온다 (inference로는 보내지 않는다).
 
 ### 테스트
 
@@ -46,11 +43,9 @@ docker compose run --rm --no-deps gateway pytest -q
 
 | 이름 | 기본값 | 설명 |
 |---|---|---|
-| `GATEWAY_FORWARD_MODE` | `pipeline` | `pipeline`: preprocessing → inference · `echo`: 받은 프레임을 바로 결과로 (테스트용) · `off` |
-| `GATEWAY_FORWARD_URL` | `http://preprocessing:8002/preprocess` | preprocessing 주소 |
-| `GATEWAY_INFERENCE_URL` | `http://inference:8003/infer` | inference 주소. 비우면 inference를 부르지 않는다 |
+| `GATEWAY_FORWARD_MODE` | `pipeline` | `pipeline`: preprocessing으로 보냄 · `echo`: 받은 프레임을 바로 결과로 (테스트용) · `off` |
+| `GATEWAY_FORWARD_URL` | `http://preprocessing:8002/frame` | preprocessing 주소 |
 | `GATEWAY_FORWARD_TIMEOUT` | `5` | preprocessing 응답을 기다리는 최대 시간 (초) |
-| `GATEWAY_INFERENCE_TIMEOUT` | `15` | inference 응답을 기다리는 최대 시간 (초) |
 | `GATEWAY_FORWARD_INTERVAL` | `0.2` | 프레임을 보내는 최소 간격 (초) |
 | `GATEWAY_TUNNEL` | `cloudflared` | `off`면 공개 주소를 만들지 않는다 |
 | `GATEWAY_PUBLIC_URL` | (없음) | 고정 공개 주소가 있으면 터널 대신 쓴다 (예: 이름 있는 Cloudflare 터널) |

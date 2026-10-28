@@ -1,7 +1,7 @@
 """gateway (C1): QR 접속, 휴대폰 프레임 받기, 처리 단계로 전달, 결과를 web으로 다시 전달.
 
 데이터 형식: docs/contracts/frame-input.md, preprocessing-input.md, result-return.md
-팀 구조도(docs/architecture.html)의 ①②③⑤⑥ 연결을 맡는다.
+팀 구조도(docs/architecture.html)의 ①②⑤⑥ 연결을 맡는다. ③④는 preprocessing → inference → visualizer가 이어서 보낸다.
 """
 from __future__ import annotations
 
@@ -52,8 +52,7 @@ async def lifespan(app: FastAPI):
     app.state.tunnel = Tunnel(settings.tunnel, settings.port, settings.public_url, settings.cloudflared_bin)
     await app.state.tunnel.start()
     housekeeping = asyncio.create_task(_housekeeping(app))
-    log.info("gateway 시작: 전달 방식=%s (%s → %s), 터널=%s", settings.forward_mode, settings.forward_url,
-             settings.inference_url or "inference 안 씀", app.state.tunnel.status)
+    log.info("gateway 시작: 전달 방식=%s → %s, 터널=%s", settings.forward_mode, settings.forward_url, app.state.tunnel.status)
     yield
     housekeeping.cancel()
     for session in app.state.store:
@@ -100,7 +99,6 @@ async def health(request: Request):
         "tunnel": s.tunnel.info(),
         "forward_mode": s.settings.forward_mode,
         "forward_url": s.settings.forward_url if s.settings.forward_mode == "pipeline" else None,
-        "inference_url": (s.settings.inference_url or None) if s.settings.forward_mode == "pipeline" else None,
         "sessions": len(s.store),
         "dashboards": len(s.store.dashboards),
     }
