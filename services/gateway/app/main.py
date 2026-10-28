@@ -268,8 +268,8 @@ async def view_socket(ws: WebSocket, sid: str):
 @app.post("/result")
 async def receive_result(request: Request, payload: dict = Body(...)):
     """visualizer가 마킹 프레임과 판정을 보낸다. web 대시보드와 그 프레임의 점검 화면에 그대로 전달한다."""
-    if "frame_id" not in payload or not isinstance(payload.get("image"), str) or not payload["image"]:
-        raise HTTPException(400, "frame_id와 image(base64 JPEG)가 필요합니다.")
+    if not isinstance(payload.get("image"), str) or not payload["image"]:
+        raise HTTPException(400, "image(base64 JPEG)가 필요합니다.")  # frame_id는 null이어도 된다 (대시보드에만 전달)
     if len(payload["image"]) > request.app.state.settings.max_frame_bytes * 2:
         raise HTTPException(413, "이미지가 너무 큽니다.")
     delivered = await relay_result(request.app.state.store, payload)

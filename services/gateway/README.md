@@ -67,7 +67,7 @@ docker compose run --rm --no-deps gateway pytest -q
 | `GET /qr.svg` | web | 기본 세션의 휴대폰 접속 QR (SVG) |
 | `GET /api/default-session` | web | 기본 세션 상태 (휴대폰 연결, 처리 수) |
 | `WS /ws/view` | web | ⑥ visualizer 결과 JSON을 그대로 받기 |
-| `POST /result` | visualizer | ⑤ 마킹 프레임과 판정 보내기 |
+| `POST /result` | visualizer | ⑤ 마킹 프레임과 판정 보내기 (`frame_id`가 null이면 대시보드에만 전달) |
 | `GET /phone?s=<세션>` | 휴대폰 | 촬영 화면 (QR 주소) |
 | `WS /ws/phone/<세션>` | 휴대폰 | ① 프레임 보내기 |
 | `GET /` | 사람 | gateway 점검 화면 (QR, 원본, 결과, 처리 현황) |

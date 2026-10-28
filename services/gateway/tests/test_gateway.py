@@ -100,6 +100,16 @@ def test_qr_uses_public_url_and_default_session(monkeypatch):
         assert first["session_id"] == second["session_id"] != info["session_id"]
 
 
+def test_default_session_is_never_pruned(monkeypatch):
+    """web 대시보드에 떠 있는 QR이 끝난 세션을 가리키지 않도록 기본 세션은 오래돼도 남긴다."""
+    store = SessionStore(ttl=60)
+    default, other = store.default(), store.create()
+    later = time.time() + 3600
+    monkeypatch.setattr("app.sessions.time.time", lambda: later)
+    assert [s.id for s in store.prune()] == [other.id]
+    assert store.default().id == default.id
+
+
 def test_unknown_session_closes_4404(monkeypatch):
     with make_client(monkeypatch) as c:
         with pytest.raises(WebSocketDisconnect) as e:
@@ -312,10 +322,15 @@ def test_preprocessing_error_is_recorded(monkeypatch):
 
 def test_result_validation(monkeypatch):
     with make_client(monkeypatch) as c:
-        assert c.post("/result", json={"image": "abc"}).status_code == 400  # frame_id 없음
         assert c.post("/result", json={"frame_id": 1}).status_code == 400  # image 없음
+        assert c.post("/result", json={"frame_id": 1, "image": ""}).status_code == 400
         assert c.post("/result", content=b"not json", headers={"Content-Type": "application/json"}).status_code in (400, 422)
         assert c.post("/result", json=visualizer_result("999")).json() == {"delivered": 0}  # 모르는 프레임도 받는다
+        with c.websocket_connect("/ws/view") as dashboard:
+            dashboard.receive_json()  # 연결 직후 받는 마지막 결과
+            # inference가 frame_id를 빠뜨리면 visualizer는 null로 보낸다. 대시보드에는 그대로 전달한다
+            assert c.post("/result", json=visualizer_result(None)).json() == {"delivered": 1}
+            assert dashboard.receive_json()["frame_id"] is None
 
 
 def test_new_viewers_get_last_result(monkeypatch):

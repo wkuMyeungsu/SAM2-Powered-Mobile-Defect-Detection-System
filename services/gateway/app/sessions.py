@@ -179,7 +179,7 @@ class SessionStore:
     def prune(self, force_oldest: bool = False) -> list[Session]:
         """연결이 하나도 없고 오래된 세션을 지운다. 지운 세션을 돌려준다 (작업 정리용)."""
         now = time.time()
-        idle = [s for s in self._sessions.values() if s.phone is None and not s.viewers]
+        idle = [s for s in self._sessions.values() if s.phone is None and not s.viewers and s.id != self.default_id]
         removed = [s for s in idle if now - s.last_active > self.ttl]
         if force_oldest and not removed and idle:
             removed = [min(idle, key=lambda s: s.last_active)]
