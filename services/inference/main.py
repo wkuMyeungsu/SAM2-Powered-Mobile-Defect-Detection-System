@@ -7,9 +7,11 @@ preprocessing 이 찾은 과자 박스를 SAM 2 프롬프트로 써서 정확한
 import asyncio
 import base64
 import binascii
+import json
 import logging
 import os
 import time
+from pathlib import Path
 from contextlib import asynccontextmanager
 
 import cv2
@@ -26,6 +28,9 @@ SERVICE = os.environ.get("SERVICE_NAME", "inference")
 PORT = int(os.environ.get("PORT", "8003"))
 VISUALIZER_URL = os.environ.get("VISUALIZER_URL", "http://visualizer:8004/visualize")  # 비우면 전송하지 않음
 VISUALIZER_TIMEOUT = float(os.environ.get("VISUALIZER_TIMEOUT", "2"))
+# 정하면 받은 프레임과 판정 결과를 이 폴더에 남긴다 (현장 보정·디버그용). 최근 DUMP_KEEP 프레임만 둔다.
+DUMP_DIR = os.environ.get("DUMP_DIR", "")
+DUMP_KEEP = int(os.environ.get("DUMP_KEEP", "300"))
 TH = judge.Thresholds()
 
 logging.basicConfig(level=logging.WARNING, format="%(asctime)s %(levelname)s %(message)s")
@@ -75,13 +80,21 @@ def judge_frame(req: dict) -> dict:
     """프레임 하나 → visualizer 로 보낼 메시지. 단계 2~5 (분할·정리·측정·판정)."""
     bgr = decode_image(req.get("image"))
     h, w = bgr.shape[:2]
-    boxes = parse_boxes(req.get("candidates"), w, h)
+    boxes, empty = judge.cookie_boxes(bgr, parse_boxes(req.get("candidates"), w, h), TH)
     masks, scores = segmenter.segment(cv2.cvtColor(bgr, cv2.COLOR_BGR2RGB), [b for _, b in boxes])
 
     objects = []
+    dropped = [{"candidate": idx, "why": "no cookie color in box"} for idx in empty]
     for (idx, box), mask, score in zip(boxes, masks, scores):
-        m = judge.measure(judge.clean_mask(mask, box))
+        mask = judge.clean_mask(mask, box)
+        m = judge.measure(mask)
         if m is None or m["area"] < TH.min_area:
+            dropped.append({"candidate": idx, "why": "small mask", "area": m["area"] if m else 0})
+            continue
+        hue, sat = judge.mask_color(bgr, mask)
+        if not judge.is_cookie_color(hue, sat, TH):
+            # 화면 글자·벨트 무늬 같은 쿠키가 아닌 후보
+            dropped.append({"candidate": idx, "why": "not cookie color", "hue": hue, "sat": sat})
             continue
         if judge.touches_border(box, w, h):
             # 잘린 쪽이 직선이라 항상 불량처럼 보인다. 판정은 보류한다.
@@ -100,6 +113,7 @@ def judge_frame(req: dict) -> dict:
             "solidity": round(m["solidity"], 4),
             "fill": round(m["fill"], 4),
             "notch": round(m["notch"], 4),
+            "straight": round(m["straight"], 4),
             "score": round(float(score), 4),
             "result": result,
             "reason": reason,
@@ -110,10 +124,28 @@ def judge_frame(req: dict) -> dict:
         # 원본 프레임이 함께 오면 그것을, 아니면 전처리된 프레임을 넘긴다.
         "image": req.get("original_image") or req["image"],
         "objects": objects,
+        "dropped": dropped,  # visualizer 로는 보내지 않는다
     }
     if req.get("timestamp") is not None:
         out["timestamp"] = req["timestamp"]
     return out
+
+
+def dump(req: dict, msg: dict, dropped: list) -> None:
+    """받은 프레임(JPEG)과 후보·판정·버린 이유(JSON)를 DUMP_DIR 에 남긴다."""
+    folder = Path(DUMP_DIR)
+    folder.mkdir(parents=True, exist_ok=True)
+    name = f"{time.time():.3f}_{msg['frame_id']}"
+    try:
+        (folder / f"{name}.jpg").write_bytes(base64.b64decode(req["image"].split(",")[-1]))
+        meta = {k: v for k, v in req.items() if k not in ("image", "original_image")}
+        (folder / f"{name}.json").write_text(json.dumps(
+            {"request": meta, "objects": msg["objects"], "dropped": dropped}, ensure_ascii=False, indent=1))
+        for old in sorted(folder.glob("*.jpg"))[:-DUMP_KEEP]:
+            old.unlink(missing_ok=True)
+            old.with_suffix(".json").unlink(missing_ok=True)
+    except OSError as e:
+        log.warning("dump 실패: %s", e)
 
 
 async def send_to_visualizer(client: httpx.AsyncClient, msg: dict) -> str:
@@ -168,12 +200,17 @@ async def infer(request: Request):
             return JSONResponse({"error": str(e) or "JSON 본문이 올바르지 않습니다"}, status_code=400)
         elapsed = round((time.perf_counter() - start) * 1000, 1)
 
+    dropped = msg.pop("dropped")
+    if DUMP_DIR:
+        await run_in_threadpool(dump, req, msg, dropped)
     status = await send_to_visualizer(request.app.state.client, msg)
-    log.info("frame %s: %d개 (FAIL %d) %.0fms → %s", msg["frame_id"], len(msg["objects"]),
-             sum(o["result"] == "FAIL" for o in msg["objects"]), elapsed, status)
+    log.info("frame %s: 후보 %d → %d개 (FAIL %d, 버림 %d) %.0fms → %s", msg["frame_id"],
+             len(req.get("candidates") or []), len(msg["objects"]),
+             sum(o["result"] == "FAIL" for o in msg["objects"]), len(dropped), elapsed, status)
     return {
         "frame_id": msg["frame_id"],
         "objects": msg["objects"],
+        "dropped": dropped,
         "elapsed_ms": elapsed,
         "visualizer": status,
     }
