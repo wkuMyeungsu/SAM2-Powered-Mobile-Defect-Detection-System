@@ -15,7 +15,7 @@ web 대시보드 ◀──────────────⑥(WebSocket /ws/
 ```
 
 1. 휴대폰이 QR 주소로 들어와 카메라 프레임(JPEG)을 초당 5장 보낸다. 휴대폰 카메라는 HTTPS 주소에서만 열리므로, 컨테이너 안에서 cloudflared 임시 터널로 공개 HTTPS 주소를 만든다 (계정·설정 필요 없음).
-2. 프레임마다 gateway 전체에서 늘어나는 `frame_id`와 받은 시각 `timestamp`(unix 초)를 붙인다.
+2. 프레임마다 `frame_id`와 받은 시각 `timestamp`(unix 초)를 붙인다. `frame_id`는 gateway 전체에서 1씩 늘고, 시작값을 시각에서 정해서 gateway를 다시 켜도 작아지지 않는다 (visualizer는 번호가 작아진 프레임을 오래된 것으로 보고 버린다).
 3. 프레임 1장을 preprocessing에 보내고, 그 응답에 `frame_id`·`timestamp`·원본 이미지를 덧붙여 inference에 보낸다.
 4. 처리하는 동안 휴대폰이 보낸 프레임은 가장 최신 1장만 남는다. 처리가 끝나면 그 1장을 보낸다. SAM 2가 느려도 결과가 밀리지 않는다. inference가 `503`(바쁨)이면 그 프레임은 건너뛴다.
 5. visualizer가 `POST /result`로 보낸 결과를 web 대시보드(`/ws/view`)에 그대로 보낸다.

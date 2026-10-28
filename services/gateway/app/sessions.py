@@ -1,8 +1,9 @@
 """세션과 결과 전달.
 
 - 세션: 휴대폰 1대 + 점검 화면 여러 개. 휴대폰이 보낸 최신 프레임과 처리 현황을 들고 있다.
-- frame_id: gateway 전체에서 1부터 늘어나는 번호. visualizer가 frame_id 순서로 오래된 프레임을 버리므로
-  세션이 바뀌어도 번호가 되돌아가지 않게 한다. frame_id로 어느 세션의 프레임인지 찾는다.
+- frame_id: gateway 전체에서 1씩 늘어나는 번호. visualizer는 마지막으로 받은 번호보다 작은 프레임을 버리므로
+  (차이가 300 이상일 때만 재시작으로 본다) 세션이 바뀌거나 gateway를 다시 켜도 번호가 작아지면 안 된다.
+  그래서 시작값을 시각에서 정한다 (frame_id_start). frame_id로 어느 세션의 프레임인지 찾는다.
 - 보는 화면은 두 종류다.
   - web 대시보드 (/ws/view): visualizer가 보낸 결과 JSON을 그대로 받는다 (visualizer-gateway 제안 형식).
   - gateway 점검 화면 (/ws/view/<세션>): status·frame·result 메시지를 받는다.
@@ -24,10 +25,17 @@ from fastapi import WebSocket
 ID_ALPHABET = "abcdefghjkmnpqrstuvwxyz23456789"  # 헷갈리는 글자(i, l, o, 0, 1) 제외
 ID_LENGTH = 6
 RECENT_FRAMES = 2000  # frame_id → 세션·받은 시각을 기억하는 수
+FRAME_ID_EPOCH = 1_767_225_600  # 2026-01-01 00:00 UTC
+FRAME_ID_PER_SECOND = 10  # 초당 이보다 적게 받는 한, 다시 켜도 번호가 이전 실행보다 크다 (휴대폰은 초당 5장)
 
 
 def now_ms() -> int:
     return int(time.time() * 1000)
+
+
+def frame_id_start() -> int:
+    """gateway를 다시 켜도 이전 실행의 번호보다 크게 시작한다 (2026년부터 0.1초마다 1씩 커지는 값)."""
+    return (int(time.time()) - FRAME_ID_EPOCH) * FRAME_ID_PER_SECOND + 1
 
 
 def data_uri(b64: str) -> str:
@@ -119,7 +127,7 @@ class SessionStore:
         self.ttl = ttl
         self.max_sessions = max_sessions
         self._sessions: dict[str, Session] = {}
-        self._frame_ids = itertools.count(1)
+        self._frame_ids = itertools.count(frame_id_start())
         self._frames: "OrderedDict[int, tuple[str, int]]" = OrderedDict()  # frame_id → (세션 ID, 받은 시각 ms)
         self.default_id: str | None = None  # /qr.svg가 쓰는 기본 세션
         self.dashboards: set[WebSocket] = set()  # web 대시보드 (/ws/view)

@@ -14,7 +14,7 @@ from fastapi.testclient import TestClient
 from starlette.websockets import WebSocketDisconnect
 
 from app.main import app
-from app.sessions import jpeg_size
+from app.sessions import SessionStore, jpeg_size
 from app.tunnel import URL_RE, Tunnel
 
 # 실제 인코더(Pillow)로 만든 40x30 JPEG: 일반(baseline), progressive
@@ -142,6 +142,18 @@ def test_frame_ids_increase_across_sessions(monkeypatch):
                 phone.send_bytes(JPEG)
                 ids.append(receive_until(view, "frame")["frame_id"])
         assert ids[1] > ids[0]
+
+
+def test_frame_ids_keep_increasing_after_restart(monkeypatch):
+    """gateway를 다시 켜도 번호가 작아지지 않아야 visualizer가 새 프레임을 '오래된 프레임'으로 버리지 않는다."""
+    clock = [1_793_000_000.0]
+    monkeypatch.setattr("app.sessions.time.time", lambda: clock[0])
+    store = SessionStore(ttl=60)
+    session = store.create()
+    last = [store.add_frame(session, JPEG) for _ in range(50)][-1]  # 5초 동안 초당 10장
+    clock[0] += 5
+    restarted = SessionStore(ttl=60)  # 5초 뒤 다시 켬
+    assert restarted.add_frame(restarted.create(), JPEG) > last
 
 
 def test_drops_non_jpeg(monkeypatch):
