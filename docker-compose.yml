@@ -1,0 +1,60 @@
+# 서비스 1개 = 폴더 1개 = 컨테이너 1개.
+# 내 서비스만: docker compose up --build <서비스>   전체: docker compose up --build
+# 컨테이너끼리는 서비스 이름으로 부른다. 예: http://inference:8003  (localhost는 자기 자신)
+# 호스트 포트는 .env로 바꿀 수 있다 (.env.example 참고). .env가 없어도 기본값으로 뜬다.
+name: pocket-smart-factory
+
+x-python-service: &python-service
+  restart: unless-stopped
+  env_file:
+    - path: .env
+      required: false
+  healthcheck:
+    test: ["CMD", "python", "-c", "import os, urllib.request; urllib.request.urlopen('http://127.0.0.1:%s/health' % os.environ['PORT'])"]
+    interval: 10s
+    timeout: 3s
+    retries: 5
+    start_period: 5s
+
+services:
+  web:
+    build: ./web
+    restart: unless-stopped
+    ports: ["${WEB_PORT:-8000}:80"]
+    healthcheck:
+      test: ["CMD", "wget", "-q", "--spider", "http://127.0.0.1/"]
+      interval: 10s
+      timeout: 3s
+      retries: 5
+
+  gateway:
+    <<: *python-service
+    build: ./services/gateway
+    ports: ["${GATEWAY_PORT:-8001}:8001"]
+    environment:
+      SERVICE_NAME: gateway
+      PORT: "8001"
+
+  preprocessing:
+    <<: *python-service
+    build: ./services/preprocessing
+    ports: ["${PREPROCESSING_PORT:-8002}:8002"]
+    environment:
+      SERVICE_NAME: preprocessing
+      PORT: "8002"
+
+  inference:
+    <<: *python-service
+    build: ./services/inference
+    ports: ["${INFERENCE_PORT:-8003}:8003"]
+    environment:
+      SERVICE_NAME: inference
+      PORT: "8003"
+
+  visualizer:
+    <<: *python-service
+    build: ./services/visualizer
+    ports: ["${VISUALIZER_PORT:-8004}:8004"]
+    environment:
+      SERVICE_NAME: visualizer
+      PORT: "8004"
