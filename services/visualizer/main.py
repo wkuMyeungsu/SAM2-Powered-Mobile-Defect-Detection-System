@@ -50,10 +50,11 @@ class DetectedObject(BaseModel):
     contour: list[list[float]] = Field(description="과자 윤곽선 [[x, y], ...]. 0~1 정규화 좌표 권장, 픽셀 좌표도 받음")
     circularity: float
     result: Literal["PASS", "FAIL", "WAIT"]
+    reason: str | None = Field(None, description="inference 가 붙인 판정 이유. 있으면 gateway 로 그대로 넘긴다")
 
 
 class InferenceResult(BaseModel):
-    frame_id: int | str = Field(description="gateway 가 붙인 번호. 숫자 또는 숫자 문자열이면 순서 정리에 쓴다")
+    frame_id: int | str | None = Field(None, description="gateway 가 붙인 번호. 숫자 또는 숫자 문자열이면 순서 정리에 쓴다")
     timestamp: float | None = Field(None, description="gateway 가 프레임을 받은 시각 (unix seconds). 없으면 지연시간 생략")
     image: str = Field(description="프레임 JPEG/PNG base64")
     width: int | None = Field(None, description="contour 가 픽셀 좌표일 때 그 좌표의 기준 이미지 너비. 없으면 image 크기")
@@ -110,7 +111,7 @@ def decode_image(b64: str) -> np.ndarray:
     return img
 
 
-def order_key(frame_id: int | str) -> int | None:
+def order_key(frame_id: int | str | None) -> int | None:
     """순서 비교용 정수. preprocessing 처럼 "123" 문자열로 와도 비교할 수 있게 한다."""
     try:
         return int(frame_id)
@@ -314,10 +315,11 @@ async def visualize(f: InferenceResult):
             pts = pts / np.array([f.width or w, f.height or h], dtype=np.float32)
         result = "WAIT" if touches_edge(pts) else o.result
         cx, cy = centroid(pts)
-        shapes.append((pts, o.circularity))
+        shapes.append((pts, o.circularity, o.reason))
         tracked.append(Tracked(cx, cy, result))
     track(tracked)
-    items = [(pts, t.result, circ, t.tid) for (pts, circ), t in zip(shapes, tracked)]
+    items = [(pts, t.result, circ, t.tid) for (pts, circ, _), t in zip(shapes, tracked)]
+    reasons = [reason for _, _, reason in shapes]
 
     latency_ms = None if f.timestamp is None else int((time.time() - f.timestamp) * 1000)
     defect_in_frame = sum(t.result == "FAIL" for t in tracked)
@@ -351,8 +353,8 @@ async def visualize(f: InferenceResult):
         "image": base64.b64encode(jpeg).decode(),
         "summary": summary,
         "objects": [
-            {"id": tid, "result": result, "circularity": round(circ, 4)}
-            for _, result, circ, tid in items
+            {"id": tid, "result": result, "circularity": round(circ, 4), "reason": reason}
+            for (_, result, circ, tid), reason in zip(items, reasons)
         ],
     })
     metrics.processed += 1

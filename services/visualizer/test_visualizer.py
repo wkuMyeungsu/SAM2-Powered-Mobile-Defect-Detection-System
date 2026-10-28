@@ -90,6 +90,16 @@ class VisualizerTest(unittest.TestCase):
         self.assertEqual(self.gateway.sent[-1]["objects"][0]["result"], "WAIT")
         self.assertEqual(self.gateway.sent[-1]["summary"]["in_frame"], 1)
 
+    def test_inference_style_message(self):
+        """inference 가 실제로 보내는 형식: frame_id 없음(null) 가능, reason 등 추가 필드 포함"""
+        obj = {"contour": square(0.5, 0.5), "circularity": 0.83, "result": "FAIL",
+               "reason": "straight cut or broken", "solidity": 0.98, "fill": 0.83, "candidate": 0}
+        r = self.send(None, [obj])
+        self.assertEqual(r.json()["status"], "ok")
+        sent = self.gateway.sent[-1]
+        self.assertIsNone(sent["frame_id"])
+        self.assertEqual(sent["objects"][0]["reason"], "straight cut or broken")
+
     def test_old_frame_dropped(self):
         self.send("10", [])
         r = self.send("9", [])
