@@ -95,8 +95,23 @@ docker compose --profile test run --rm --build pipeline
 
 ①~⑥ 전 구간을 실제 휴대폰과 과자로 확인한다. 단계별 확인 항목은 [휴대폰 확인 체크리스트](docs/phone-checklist.md).
 
+## 브랜치
+
+```
+feature/<파트>/<기능> ──PR──▶ dev (통합·테스트) ──PR──▶ main (최종본)
+```
+
+- `main`과 `dev`는 GitHub 보호 규칙으로 직접 push가 막혀 있고, PR로만 합친다. 병합은 Create a merge commit만 쓴다.
+- 작업 브랜치는 `dev`에서 `<태그>/<파트>/<기능>` 세 단계로 만든다.
+  - 태그: `feature` `fix` `docs` `refactor` `chore`
+  - 파트: `web` `gateway` `preprocessing` `inference` `visualizer`, 여러 파트를 함께 바꾸면 `common`
+  - 예: `feature/web/qr-page`, `fix/inference/empty-mask`
+- 커밋 메시지는 `<타입>(<파트>): <요약>`. 예: `feat(web): QR 접속 화면 추가`
+
+작업 범위, 금지 사항, main에 올리는 절차는 [git 작업 규칙](docs/git-rules.html)에 있다.
+
 ## 문서
 
 - [구간별 데이터 형식](docs/contracts/README.md)
 - [휴대폰 확인 체크리스트](docs/phone-checklist.md)
-- [팀 git 작업 규칙](docs/git-rules.html)
+- [git 작업 규칙](docs/git-rules.html)
