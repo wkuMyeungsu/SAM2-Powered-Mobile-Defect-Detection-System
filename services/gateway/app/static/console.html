@@ -44,7 +44,10 @@
   @media (max-width: 1000px) { .views { grid-template-columns: 1fr; } }
   figure { margin: 0; }
   .screen { aspect-ratio: 4 / 3; background: #dfe5e6; border-radius: 8px; display: grid; place-items: center; overflow: hidden; color: var(--muted); text-align: center; padding: 1rem; }
-  .screen img { width: 100%; height: 100%; object-fit: contain; }
+  .screen { position: relative; }
+  .screen img, .screen svg { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: contain; }
+  .screen rect { fill: none; stroke: #f2c230; stroke-width: 3; vector-effect: non-scaling-stroke; }
+  .screen circle { fill: #f2c230; }
   figcaption { display: flex; justify-content: space-between; gap: 1rem; margin-top: .5rem; font-size: .9rem; color: var(--muted); font-variant-numeric: tabular-nums; }
   .verdict { font-weight: 700; color: var(--ink); }
   .verdict[data-v="defect"] { color: var(--bad); }
@@ -91,7 +94,7 @@
       </figure>
       <figure>
         <div class="screen" id="result">처리 결과가 돌아오면 여기에 보입니다.</div>
-        <figcaption><span>판정 결과 <span class="verdict" id="verdict"></span></span><span id="resultMeta"></span></figcaption>
+        <figcaption><span><span id="stage">판정 결과</span> <span class="verdict" id="verdict"></span></span><span id="resultMeta"></span></figcaption>
       </figure>
     </div>
     <pre id="resultJson" hidden></pre>
@@ -108,6 +111,29 @@
     let img = box.querySelector("img");
     if (!img) { box.textContent = ""; img = document.createElement("img"); img.alt = ""; box.appendChild(img); }
     img.src = src;
+  }
+
+  // 전처리 결과의 후보 영역(bbox, point)을 이미지 위에 그린다. 좌표는 전처리된 이미지 기준이다
+  function drawCandidates(box, result) {
+    let svg = box.querySelector("svg");
+    if (svg) svg.remove();
+    if (!result || !Array.isArray(result.candidates) || !result.width || !result.height) return;
+    const ns = "http://www.w3.org/2000/svg";
+    svg = document.createElementNS(ns, "svg");
+    svg.setAttribute("viewBox", `0 0 ${result.width} ${result.height}`);
+    svg.setAttribute("preserveAspectRatio", "xMidYMid meet");
+    for (const c of result.candidates) {
+      const [x1, y1, x2, y2] = c.bbox;
+      const rect = document.createElementNS(ns, "rect");
+      rect.setAttribute("x", x1); rect.setAttribute("y", y1); rect.setAttribute("width", x2 - x1); rect.setAttribute("height", y2 - y1);
+      svg.appendChild(rect);
+      if (Array.isArray(c.point)) {
+        const dot = document.createElementNS(ns, "circle");
+        dot.setAttribute("cx", c.point[0]); dot.setAttribute("cy", c.point[1]); dot.setAttribute("r", Math.max(result.width, result.height) / 150);
+        svg.appendChild(dot);
+      }
+    }
+    box.appendChild(svg);
   }
 
   function showTunnel(info) {
@@ -150,8 +176,11 @@
       else if (msg.type === "frame") { showImage($("preview"), msg.image); $("previewId").textContent = `#${msg.frame_id}`; }
       else if (msg.type === "result") {
         showImage($("result"), msg.image);
+        drawCandidates($("result"), msg.result);
+        $("stage").textContent = { preprocessing: "전처리 결과", echo: "echo 결과" }[msg.stage] || "판정 결과";
         const v = (msg.result && msg.result.verdict) || "";
-        $("verdict").textContent = { ok: "정상", defect: "불량", none: "대상 없음" }[v] || v; $("verdict").dataset.v = v;
+        const count = msg.result && Array.isArray(msg.result.candidates) ? `후보 ${msg.result.candidates.length}개` : "";
+        $("verdict").textContent = { ok: "정상", defect: "불량", none: "대상 없음" }[v] || v || count; $("verdict").dataset.v = v;
         $("resultMeta").textContent = `#${msg.frame_id}` + (msg.latency_ms != null ? `, ${msg.latency_ms}ms` : "");
         $("resultJson").textContent = JSON.stringify(msg.result, null, 2); $("resultJson").hidden = false;
       }

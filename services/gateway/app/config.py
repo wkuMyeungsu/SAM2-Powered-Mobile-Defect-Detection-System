@@ -49,7 +49,7 @@ def load_settings() -> Settings:
         public_url=os.getenv("GATEWAY_PUBLIC_URL", "").strip().rstrip("/"),
         cloudflared_bin=_env("GATEWAY_CLOUDFLARED_BIN", "cloudflared"),
         forward_mode=forward_mode,
-        forward_url=_env("GATEWAY_FORWARD_URL", "http://preprocessing:8002/frames"),
+        forward_url=_env("GATEWAY_FORWARD_URL", "http://preprocessing:8002/preprocess"),
         forward_interval=float(_env("GATEWAY_FORWARD_INTERVAL", "0.2")),
         forward_timeout=float(_env("GATEWAY_FORWARD_TIMEOUT", "5")),
         phone_fps=int(_env("GATEWAY_PHONE_FPS", "5")),

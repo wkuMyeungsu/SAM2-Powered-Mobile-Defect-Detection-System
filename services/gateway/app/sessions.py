@@ -180,11 +180,16 @@ async def deliver_result(
     frame_id: int,
     image: bytes,
     result: dict[str, Any],
+    stage: str = "final",
 ) -> int:
-    """처리 결과를 화면에 보내고, 그 프레임이 처리 중이었다면 다음 프레임을 보낼 수 있게 자리를 비운다."""
+    """처리 결과를 화면에 보내고, 그 프레임이 처리 중이었다면 다음 프레임을 보낼 수 있게 자리를 비운다.
+
+    stage: final(visualizer가 보낸 최종 결과) · preprocessing(전처리 응답) · echo(테스트)
+    """
     received = session.received_at.get(frame_id)
     payload = {
         "type": "result",
+        "stage": stage,
         "frame_id": frame_id,
         "latency_ms": now_ms() - received if received else None,
         "result": result,

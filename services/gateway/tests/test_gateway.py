@@ -104,7 +104,7 @@ def test_echo_mode_end_to_end(monkeypatch):
                 frame = receive_until(view, "frame")
                 assert frame["frame_id"] == 1 and frame["image"].startswith("data:image/jpeg;base64,")
                 result = receive_until(view, "result")
-                assert result["frame_id"] == 1 and result["result"]["source"] == "echo"
+                assert result["frame_id"] == 1 and result["stage"] == "echo"
                 assert result["latency_ms"] is not None and result["latency_ms"] >= 0
                 status = receive_until(view, "status")
                 assert status["phone_connected"] is True and status["phone_info"]["width"] == 40
@@ -134,18 +134,38 @@ def test_second_phone_replaces_first(monkeypatch):
 
 
 class FakePreprocessing:
-    """preprocessing 대신 요청을 기록한다."""
+    """preprocessing 대신 요청을 기록한다.
 
-    def __init__(self, status=202):
+    sync=True면 진아 님 POST /preprocess처럼 200으로 전처리 결과(이미지 포함)를 바로 돌려주고,
+    False면 202만 돌려준다 (뒤 단계가 POST /results로 결과를 보내는 방식).
+    """
+
+    def __init__(self, status=202, sync=False):
         self.status = status
+        self.sync = sync
         self.requests = []
 
     def __call__(self, request: httpx.Request):
         body = request.read()
-        meta = json.loads(re.search(rb'name="meta"\r\n\r\n(.*?)\r\n--', body, re.S).group(1))
-        has_image = b'name="image"; filename="frame.jpg"' in body and JPEG in body
-        self.requests.append({"url": str(request.url), "meta": meta, "has_image": has_image})
-        return httpx.Response(self.status, json={"accepted": True})
+        self.requests.append({
+            "url": str(request.url),
+            "content_type": request.headers.get("content-type"),
+            "frame_id": int(request.headers["x-frame-id"]),
+            "session_id": request.headers["x-session-id"],
+            "received_at": int(request.headers["x-received-at"]),
+            "body_is_frame": body == JPEG,
+        })
+        if self.status >= 400:
+            return httpx.Response(self.status, json={"error": "not supported"})
+        if self.sync:
+            return httpx.Response(200, json={
+                "frame_id": request.headers["x-frame-id"],
+                "image": base64.b64encode(JPEG_PROGRESSIVE).decode(),
+                "format": "jpeg", "width": 40, "height": 30, "scale": 1.0,
+                "candidates": [{"bbox": [5, 5, 20, 20], "point": [12.5, 12.5], "area": 225}],
+                "elapsed_ms": 3.1,
+            })
+        return httpx.Response(self.status)
 
 
 def use_fake(client, fake):
@@ -171,9 +191,9 @@ def test_pipeline_sends_latest_frame_only(monkeypatch):
             phone.send_bytes(JPEG)
             assert wait_for(lambda: len(fake.requests) == 1)
             first = fake.requests[0]
-            assert first["url"] == "http://preprocessing:8002/frames" and first["has_image"]
-            assert first["meta"]["session_id"] == sid and first["meta"]["frame_id"] == 1
-            assert (first["meta"]["width"], first["meta"]["height"]) == (40, 30)
+            assert first["url"] == "http://preprocessing:8002/preprocess"
+            assert first["content_type"] == "image/jpeg" and first["body_is_frame"]  # 원본 JPEG 그대로
+            assert first["session_id"] == sid and first["frame_id"] == 1 and first["received_at"] > 0
 
             phone.send_bytes(JPEG)
             phone.send_bytes(JPEG)
@@ -181,14 +201,32 @@ def test_pipeline_sends_latest_frame_only(monkeypatch):
             time.sleep(0.2)
             assert len(fake.requests) == 1  # 결과가 오기 전에는 더 보내지 않는다
 
-            r = post_result(c, first["meta"], {"verdict": "defect", "items": [{"id": 1, "verdict": "defect"}]})
+            r = post_result(c, {"session_id": sid, "frame_id": 1}, {"verdict": "defect", "items": [{"id": 1, "verdict": "defect"}]})
             assert r.status_code == 200 and r.json()["delivered"] == 1
             result = receive_until(view, "result")
-            assert result["frame_id"] == 1 and result["result"]["verdict"] == "defect"
+            assert result["frame_id"] == 1 and result["stage"] == "final" and result["result"]["verdict"] == "defect"
 
             assert wait_for(lambda: len(fake.requests) == 2)
-            assert fake.requests[1]["meta"]["frame_id"] == 3  # 2번은 건너뛰고 최신 3번
+            assert fake.requests[1]["frame_id"] == 3  # 2번은 건너뛰고 최신 3번
 
+
+
+def test_sync_preprocessing_result_goes_to_view(monkeypatch):
+    """preprocessing이 200으로 전처리 결과를 바로 주면 화면에 보내고, 기다리지 않고 다음 프레임을 보낸다."""
+    with make_client(monkeypatch, GATEWAY_FORWARD_MODE="pipeline", GATEWAY_FORWARD_INTERVAL="0", GATEWAY_FORWARD_TIMEOUT="30") as c:
+        fake = FakePreprocessing(sync=True)
+        use_fake(c, fake)
+        sid = c.post("/api/sessions").json()["session_id"]
+        with c.websocket_connect(f"/ws/view/{sid}") as view, c.websocket_connect(f"/ws/phone/{sid}") as phone:
+            phone.receive_json()
+            phone.send_bytes(JPEG)
+            result = receive_until(view, "result")
+            assert result["stage"] == "preprocessing" and result["frame_id"] == 1
+            assert result["image"] == "data:image/jpeg;base64," + base64.b64encode(JPEG_PROGRESSIVE).decode()  # 전처리된 이미지
+            assert result["result"]["candidates"][0]["bbox"] == [5, 5, 20, 20] and "image" not in result["result"]
+            phone.send_bytes(JPEG)
+            assert wait_for(lambda: len(fake.requests) == 2, timeout=2)  # 결과 대기 시간(30초)을 기다리지 않는다
+            assert c.get(f"/api/sessions/{sid}").json()["forward_timeouts"] == 0
 
 def test_pipeline_error_is_recorded(monkeypatch):
     with make_client(monkeypatch, GATEWAY_FORWARD_MODE="pipeline") as c:

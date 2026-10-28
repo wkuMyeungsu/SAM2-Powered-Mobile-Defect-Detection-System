@@ -2,11 +2,16 @@
 
 세션마다 처리 중인 프레임을 1장만 둔다. 결과가 돌아오거나 시간이 지나면,
 그 사이 쌓인 프레임 중 가장 최신 1장만 보낸다 (docs/contracts/preprocessing-input.md).
+
+preprocessing(POST /preprocess)은 JPEG 본문을 받아 전처리 결과를 바로 응답한다.
+- 응답이 200 JSON(이미지 포함)이면: 그 결과를 화면에 바로 보내고 다음 프레임으로 넘어간다.
+- 응답이 202처럼 본문이 없으면: 뒤 단계(visualizer)가 POST /results로 돌려줄 때까지 기다린다.
 """
 from __future__ import annotations
 
 import asyncio
-import json
+import base64
+import binascii
 import logging
 import time
 
@@ -70,45 +75,57 @@ class Forwarder:
                 await asyncio.sleep(gap)
 
             session.new_frame.clear()
-            frame, frame_id, size = session.latest, session.latest_id, session.latest_size
-            if frame is None or size is None:
+            frame, frame_id = session.latest, session.latest_id
+            if frame is None:
                 continue
             session.inflight = (frame_id, time.monotonic())
             last_sent = time.monotonic()
 
-            if await self._send(session, frame_id, frame, size):
+            if await self._send(session, frame_id, frame):
                 session.forwarded += 1
             else:
                 session.inflight = None
                 await asyncio.sleep(RETRY_DELAY)
 
-    async def _send(self, session: Session, frame_id: int, frame: bytes, size: tuple[int, int]) -> bool:
+    async def _send(self, session: Session, frame_id: int, frame: bytes) -> bool:
         if self.settings.forward_mode == "echo":
             # 처리 단계 없이 받은 프레임을 그대로 결과로 돌려준다 (web 화면 개발·테스트용)
-            asyncio.create_task(deliver_result(session, frame_id, frame, {"verdict": "none", "items": [], "source": "echo"}))
+            asyncio.create_task(deliver_result(session, frame_id, frame, {"verdict": "none", "items": []}, stage="echo"))
             return True
 
-        meta = {
-            "session_id": session.id,
-            "frame_id": frame_id,
-            "received_at": session.received_at.get(frame_id, now_ms()),
-            "width": size[0],
-            "height": size[1],
+        headers = {
+            "Content-Type": "image/jpeg",
+            "X-Frame-Id": str(frame_id),
+            "X-Session-Id": session.id,
+            "X-Received-At": str(session.received_at.get(frame_id, now_ms())),
         }
         try:
-            r = await self.client.post(
-                self.settings.forward_url,
-                files={"image": ("frame.jpg", frame, "image/jpeg")},
-                data={"meta": json.dumps(meta)},
-                timeout=self.settings.forward_timeout,
-            )
+            r = await self.client.post(self.settings.forward_url, content=frame, headers=headers, timeout=self.settings.forward_timeout)
         except httpx.HTTPError as e:
             self._record_error(session, f"{self.settings.forward_url} 연결 실패 ({type(e).__name__})")
             return False
         if not r.is_success:
-            self._record_error(session, f"{self.settings.forward_url} 응답 {r.status_code}")
+            self._record_error(session, f"{self.settings.forward_url} 응답 {r.status_code}: {r.text[:120]}")
             return False
+
+        stage_result = self._parse_stage_result(r)
+        if stage_result is not None:
+            image, result = stage_result
+            await deliver_result(session, frame_id, image, result, stage="preprocessing")
         return True
+
+    @staticmethod
+    def _parse_stage_result(r: httpx.Response) -> tuple[bytes, dict] | None:
+        """200 JSON 응답에 base64 이미지가 있으면 (이미지, 나머지 결과)로 나눈다. 아니면 None (콜백을 기다림)."""
+        if r.status_code != 200 or "application/json" not in r.headers.get("content-type", ""):
+            return None
+        try:
+            body = r.json()
+            image = base64.b64decode(body["image"], validate=True)
+        except (ValueError, KeyError, TypeError, binascii.Error):
+            return None
+        result = {k: v for k, v in body.items() if k != "image"}
+        return image, result
 
     def _record_error(self, session: Session, message: str) -> None:
         session.forward_errors += 1

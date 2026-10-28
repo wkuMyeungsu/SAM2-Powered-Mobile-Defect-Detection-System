@@ -14,8 +14,10 @@ web 화면 ◀──(WebSocket: 원본 미리보기, 판정 결과)──┴─�
 
 1. web이 세션을 만들면 휴대폰 접속 QR을 준다.
 2. 휴대폰이 QR 주소로 들어와 카메라 프레임을 초당 5장 보낸다.
-3. 처리 중인 프레임이 없을 때마다 가장 최신 프레임 1장을 preprocessing으로 보낸다 (SAM 2가 느려도 밀리지 않게).
-4. visualizer가 판정 결과를 돌려주면 web 화면으로 바로 전달한다. 원본 미리보기도 초당 2장 보낸다.
+3. 처리 중인 프레임이 없을 때마다 가장 최신 프레임 1장을 preprocessing(`POST /preprocess`, JPEG 본문)으로 보낸다 (SAM 2가 느려도 밀리지 않게).
+4. 결과를 web 화면으로 바로 전달한다. 원본 미리보기도 초당 2장 보낸다.
+   - preprocessing이 `200`으로 전처리 결과를 바로 주면 그 결과(전처리 이미지, 후보 영역)를 보낸다.
+   - 뒤 단계가 생겨 visualizer가 `POST /results`로 최종 판정을 보내면 그 결과를 보낸다.
 
 휴대폰 브라우저는 HTTPS 주소에서만 카메라를 열어 주므로, 컨테이너 안에서 cloudflared 임시 터널을 띄워 공개 HTTPS 주소를 만든다. 계정이나 설정은 필요 없다.
 
@@ -31,7 +33,7 @@ docker compose up --build gateway
 - 공개 주소는 시작 후 몇 초 뒤 생긴다. 점검 화면이나 `/health`의 `tunnel.status`가 `ready`가 되면 QR이 나온다.
 - 휴대폰 없이: 점검 화면의 **이 PC에서 촬영 화면 열기**로 PC 웹캠을 쓴다 (`localhost`는 HTTPS 없이도 카메라가 열린다).
 - 다른 파트 없이: 루트 `.env`에 `GATEWAY_FORWARD_MODE=echo`를 넣으면 받은 프레임을 그대로 결과로 돌려준다. web 화면을 만들 때 쓴다.
-- 지금 preprocessing은 `/health`만 있는 뼈대라 `pipeline` 모드에서는 "전달 실패 (응답 501)"이 쌓이는 게 정상이다.
+- preprocessing과 함께 띄우면(`docker compose up --build gateway preprocessing`) 점검 화면 오른쪽에 전처리 이미지와 후보 영역 상자가 나온다. 진아 님의 `/preprocess`가 dev에 합쳐지기 전에는 dev의 preprocessing이 뼈대라 "응답 501" 오류가 쌓이는 게 정상이다.
 
 ### 테스트
 
@@ -46,7 +48,7 @@ docker compose run --rm gateway pytest -q
 | 이름 | 기본값 | 설명 |
 |---|---|---|
 | `GATEWAY_FORWARD_MODE` | `pipeline` | `pipeline`: preprocessing으로 보냄 · `echo`: 받은 프레임을 바로 결과로 (테스트용) · `off` |
-| `GATEWAY_FORWARD_URL` | `http://preprocessing:8002/frames` | 프레임을 보낼 주소 |
+| `GATEWAY_FORWARD_URL` | `http://preprocessing:8002/preprocess` | 프레임을 보낼 주소 |
 | `GATEWAY_FORWARD_INTERVAL` | `0.2` | 프레임을 보내는 최소 간격 (초) |
 | `GATEWAY_FORWARD_TIMEOUT` | `5` | 결과를 기다리는 최대 시간 (초). 지나면 다음 프레임을 보낸다 |
 | `GATEWAY_TUNNEL` | `cloudflared` | `off`면 공개 주소를 만들지 않는다 |
