@@ -5,12 +5,16 @@ preprocessing이 찾은 과자 박스를 SAM 2(`sam2.1-hiera-tiny`) 프롬프트
 ## 처리 순서
 
 1. 이미지 디코드 → RGB 변환
-2. SAM 2: 프레임당 `set_image` 1회, 박스 N개를 한 번에 `predict`
-3. 마스크 정리 — 박스 밖 제거 → 가장 큰 덩어리만 → 닫힘 연산 → 구멍(초코칩) 메움
-4. 쿠키 색이 아닌 후보(화면 글자, 벨트 무늬 등)는 결과에서 뺀다
-5. 측정 — 패인 깊이, 가장 긴 직선 변, 원 채움률, 볼록도, 원형도
-6. 판정 — 아래 기준 중 하나라도 걸리면 `FAIL`. 화면 테두리에 닿은 박스, SAM 2 점수가 낮은 마스크는 `WAIT`(판정 보류)
-7. visualizer로 `POST` (2초 제한). 실패해도 로그만 남기고 계속 처리
+2. 박스 다시 잡기 — 화면 전체의 쿠키 색 덩어리를 찾아, preprocessing 박스와 겹치는 덩어리마다 박스 하나를 만든다
+   - 쿠키 색이 없는 박스(벨트 무늬·화면 글자)는 SAM 2에 넣지 않는다 (박스당 디코더 0.1~0.2초 절약)
+   - 쿠키가 배경과 한 박스로 묶여 와도 쿠키마다 따로 판정한다. 시연에서 preprocessing이 화면 전체를 박스 1개로 보낸 프레임이 많았는데, 예전에는 이런 프레임이 0개로 끝났다
+   - 한 쿠키에 박스가 여러 개 와도 한 번만 판정한다
+3. SAM 2: 프레임당 `set_image` 1회, 박스 N개를 한 번에 `predict`
+4. 마스크 정리 — 박스 밖 제거 → 가장 큰 덩어리만 → 닫힘 연산 → 구멍(초코칩) 메움
+5. 마스크 정리 후 다시 한 번, 쿠키 색이 아닌 마스크(화면 글자, 벨트 무늬 등)는 결과에서 뺀다
+6. 측정 — 패인 깊이, 가장 긴 직선 변, 원 채움률, 볼록도, 원형도
+7. 판정 — 아래 기준 중 하나라도 걸리면 `FAIL`. 화면 테두리에 닿은 박스, SAM 2 점수가 낮은 마스크는 `WAIT`(판정 보류)
+8. visualizer로 `POST` (2초 제한). 실패해도 로그만 남기고 계속 처리
 
 ## 판정 기준
 
@@ -86,7 +90,8 @@ preprocessing 응답 JSON을 **그대로** 넣으면 된다. 쓰는 필드:
 ```
 
 - `contour`는 **0~1 정규화 좌표** (x ÷ 너비, y ÷ 높이). `approxPolyDP`(1px)로 점을 줄였다.
-- `candidate`는 요청 `candidates`의 순번. 쿠키 색이 아닌 후보는 `objects`에 들어가지 않는다.
+- `candidate`는 그 쿠키를 찾은 요청 `candidates`의 순번. 박스 하나에 쿠키가 여럿이면 같은 순번이 여러 번 나온다.
+- 응답의 `dropped`에는 버린 후보와 이유(`no cookie color in box`, `small mask`, `not cookie color`)가 들어간다. visualizer로는 보내지 않는다.
 - `result`: `PASS` / `FAIL` / `WAIT`. `reason`은 판정 근거.
 - `visualizer`: `ok` / `dropped` / `visualizer_error` / `disabled`.
 
@@ -108,6 +113,9 @@ preprocessing 응답 JSON을 **그대로** 넣으면 된다. 쓰는 필드:
 | `COOKIE_HUE_MIN` / `COOKIE_HUE_MAX` / `COOKIE_SAT_MIN` | 5 / 30 / 60 | 쿠키 색 (OpenCV HSV). 채도 0이면 색 검사 끔 |
 | `SCORE_MIN` | 0.80 | 이보다 낮은 SAM 2 점수는 `WAIT` |
 | `MIN_MASK_AREA` | 200 | 이보다 작은 마스크(px)는 버림 |
+| `COOKIE_BLOB_MIN` / `COOKIE_BLOB_MAX` | 0.002 / 0.15 | 쿠키 색 덩어리 크기 (화면 면적 대비). 범위 밖이면 쿠키가 아닌 것으로 봄 |
+| `DUMP_DIR` | (없음) | 정하면 받은 프레임(JPEG)과 후보·판정·버린 이유(JSON)를 남김. 현장 보정·디버그용 |
+| `DUMP_KEEP` | 300 | `DUMP_DIR`에 남길 최근 프레임 수 |
 | `SAM2_MODEL` | `facebook/sam2.1-hiera-tiny` | 빌드 인자로도 바꿀 수 있음 |
 | `DEVICE` | `auto` | `cuda` 있으면 cuda, 아니면 cpu |
 
@@ -121,7 +129,7 @@ docker compose run --rm --no-deps inference python -m unittest -v test_inference
 ```
 
 - 가중치는 빌드할 때 이미지 안에 받아 둔다. 코드만 바꿔 다시 빌드하면 캐시를 쓰므로 다시 받지 않는다.
-- CPU 기준 과자 15개 프레임 1장에 약 1~2초. 처리 중 들어온 프레임은 `503`으로 바로 거절해서 결과가 밀리지 않는다.
+- CPU 기준 과자 15개 프레임 1장에 약 2초 (Mac Docker, 다른 프로그램이 한가할 때). Zoom·60fps 시뮬레이터 같은 프로그램이 CPU를 쓰면 5초 이상으로 늘어난다. 시연 중에는 다른 프로그램을 닫는다. 처리 중 들어온 프레임은 `503`으로 바로 거절해서 결과가 밀리지 않는다.
 
 ## 기준값 다시 재기 (로컬)
 
@@ -136,3 +144,13 @@ python tools/calibrate.py data/sim --out data/calib                             
 ```
 
 `calibrate.py`는 같은 이름의 `.json` 라벨이 있으면 정답과 비교하고, 없으면(실제 사진) Otsu로 박스를 찾아 점수만 낸다. `data/`는 커밋하지 않는다.
+
+## 현장 프레임 남기기
+
+루트 `.env`(커밋 안 됨)에 `DUMP_DIR=/app/dump`를 넣고 `docker compose up -d inference`로 다시 띄운 뒤 시연한다.
+
+```bash
+docker compose cp inference:/app/dump ./services/inference/data/dump   # 꺼내기 (data/ 는 커밋 안 됨)
+```
+
+각 프레임의 `.json`에 후보 박스, 쿠키별 측정값·판정, 버린 이유가 있다.

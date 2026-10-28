@@ -22,6 +22,9 @@ class Thresholds:
     hue_min: float = float(os.environ.get("COOKIE_HUE_MIN", "5"))
     hue_max: float = float(os.environ.get("COOKIE_HUE_MAX", "30"))
     sat_min: float = float(os.environ.get("COOKIE_SAT_MIN", "60"))
+    # 쿠키 색 덩어리 크기 (화면 면적 대비). 이보다 작으면 부스러기, 크면 쿠키가 아닌 것(책상·케이블 등).
+    blob_min: float = float(os.environ.get("COOKIE_BLOB_MIN", "0.002"))
+    blob_max: float = float(os.environ.get("COOKIE_BLOB_MAX", "0.15"))
     score_min: float = float(os.environ.get("SCORE_MIN", "0.80"))
     min_area: int = int(os.environ.get("MIN_MASK_AREA", "200"))
 
@@ -104,15 +107,53 @@ def longest_straight(cnt: np.ndarray, radius: float, max_turn_deg: float = 8) ->
     return best
 
 
-def looks_like_cookie(bgr: np.ndarray, mask: np.ndarray, th: Thresholds) -> bool:
-    """마스크 안 색의 중앙값이 쿠키 색(주황~갈색, 채도 있음)인지 본다."""
-    if th.sat_min <= 0:
-        return True
+def mask_color(bgr: np.ndarray, mask: np.ndarray) -> tuple[float, float]:
+    """마스크 안 HSV 색상(H)·채도(S)의 중앙값."""
     hsv = cv2.cvtColor(bgr, cv2.COLOR_BGR2HSV)[mask > 0]
     if len(hsv) == 0:
-        return False
-    h, s = np.median(hsv[:, 0]), np.median(hsv[:, 1])
-    return th.hue_min <= h <= th.hue_max and s >= th.sat_min
+        return 0.0, 0.0
+    return float(np.median(hsv[:, 0])), float(np.median(hsv[:, 1]))
+
+
+def cookie_boxes(bgr: np.ndarray, boxes: list[tuple[int, list[float]]], th: Thresholds,
+                 pad: int = 4) -> tuple[list[tuple[int, list[float]]], list[int]]:
+    """preprocessing 박스를 쿠키 색 덩어리 기준으로 다시 잡는다. 반환: (새 박스, 쿠키 색이 없던 후보 순번).
+
+    - 쿠키 색이 없는 박스(벨트 무늬·화면 글자)는 SAM 2 에 넣지 않는다. 박스 하나에 디코더가 0.1초 넘게 걸린다.
+    - 쿠키가 배경과 한 박스로 묶여 오면 그 안의 쿠키 덩어리마다 박스를 따로 만든다.
+    - 같은 쿠키에 걸친 박스가 여러 개 와도 덩어리 하나에 박스 하나만 만든다.
+    """
+    if th.sat_min <= 0:
+        return boxes, []
+    h, w = bgr.shape[:2]
+    hsv = cv2.cvtColor(bgr, cv2.COLOR_BGR2HSV)
+    color = ((hsv[..., 0] >= th.hue_min) & (hsv[..., 0] <= th.hue_max) & (hsv[..., 1] >= th.sat_min)).astype(np.uint8)
+    kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (7, 7))
+    color = cv2.morphologyEx(color, cv2.MORPH_OPEN, kernel)
+    color = cv2.morphologyEx(color, cv2.MORPH_CLOSE, kernel, iterations=2)  # 초코칩 메우기
+    n, labels, stats, _ = cv2.connectedComponentsWithStats(color, connectivity=8)
+    area = stats[:, cv2.CC_STAT_AREA]
+    ok = (area >= th.blob_min * h * w) & (area <= th.blob_max * h * w)
+
+    out, seen, empty = [], set(), []
+    for idx, (x1, y1, x2, y2) in boxes:
+        inside = np.unique(labels[int(y1):int(y2) + 1, int(x1):int(x2) + 1])
+        blobs = [b for b in inside if b > 0 and ok[b]]
+        if not blobs:
+            empty.append(idx)
+        for b in blobs:
+            if b in seen:
+                continue
+            seen.add(b)
+            bx, by, bw, bh = stats[b, :4]
+            out.append((idx, [float(max(0, bx - pad)), float(max(0, by - pad)),
+                              float(min(w - 1, bx + bw - 1 + pad)), float(min(h - 1, by + bh - 1 + pad))]))
+    return out, empty
+
+
+def is_cookie_color(hue: float, sat: float, th: Thresholds) -> bool:
+    """쿠키 색(주황~갈색, 채도 있음)인지 본다."""
+    return th.sat_min <= 0 or (th.hue_min <= hue <= th.hue_max and sat >= th.sat_min)
 
 
 def decide(m: dict, th: Thresholds) -> tuple[str, str]:

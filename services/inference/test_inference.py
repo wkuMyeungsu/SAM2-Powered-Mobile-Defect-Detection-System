@@ -117,6 +117,18 @@ class InferApiTest(unittest.TestCase):
         cands.append({"bbox": [500, 200, 560, 260]})
         r = self.client.post("/infer", json={"frame_id": 3, "image": base64.b64encode(buf).decode(), "candidates": cands})
         self.assertEqual([o["candidate"] for o in r.json()["objects"]], [0])
+        self.assertEqual([(d["candidate"], d["why"]) for d in r.json()["dropped"]], [(1, "no cookie color in box")])
+
+    def test_merged_and_duplicate_boxes(self):
+        """쿠키 둘을 묶은 큰 박스는 둘로 나누고, 한 쿠키에 겹친 박스 둘은 하나로 합친다."""
+        image, cands = frame_with([("round", 200, 150), ("round", 350, 150), ("round", 600, 300)])
+        merged = {"bbox": [100, 50, 450, 250]}
+        dup = [{"bbox": [550, 250, 610, 350]}, {"bbox": [590, 250, 660, 350]}]
+        r = self.client.post("/infer", json={"frame_id": 4, "image": image, "candidates": [merged, *dup]})
+        objs = r.json()["objects"]
+        self.assertEqual(len(objs), 3, objs)
+        self.assertEqual(sorted(o["candidate"] for o in objs), [0, 0, 1])
+        self.assertTrue(all(o["result"] == "PASS" for o in objs))
 
     def test_pass_fail_and_edge(self):
         image, cands = frame_with([("round", 200, 100), ("wedge", 450, 250), ("round", 20, 380)])
