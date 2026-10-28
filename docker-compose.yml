@@ -59,11 +59,11 @@ services:
       SERVICE_NAME: visualizer
       PORT: "8004"
 
-  # 전체 연결 테스트. 평소 up에는 뜨지 않는다: docker compose --profile test run --rm --build e2e
-  e2e:
-    build: ./tests/e2e
+  # 휴대폰 없이 합성 영상으로 서비스 연결 확인. 평소 up에는 뜨지 않는다: docker compose --profile test run --rm --build pipeline
+  pipeline:
+    build: ./tests/pipeline
     profiles: ["test"]
-    volumes: ["./tests/e2e/out:/out"]
+    volumes: ["./tests/pipeline/out:/out"]
     depends_on:
       web: { condition: service_healthy }
       gateway: { condition: service_healthy }

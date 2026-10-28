@@ -1,7 +1,7 @@
-"""전체 연결 테스트: 휴대폰 대신 합성 컨베이어 JPEG를 보내고 web 대시보드 자리에서 결과를 받는다.
+"""휴대폰 없이 서비스 연결 확인: 휴대폰 대신 합성 컨베이어 JPEG를 보내고 web 대시보드 자리에서 결과를 받는다.
 
 휴대폰 →① gateway →② preprocessing →③ inference →④ visualizer →⑤ gateway →⑥ /ws/view
-실행: docker compose --profile test run --rm --build e2e
+실행: docker compose --profile test run --rm --build pipeline
 """
 import asyncio
 import base64
@@ -100,7 +100,7 @@ async def run():
     async with websockets.connect(f"ws://{GATEWAY}/ws/phone/{sid}", max_size=None) as phone:
         config = json.loads(await phone.recv())
         check(config.get("type") == "config", f"gateway 촬영 설정 수신 {config}")
-        await phone.send(json.dumps({"type": "hello", "width": W, "height": H, "user_agent": "e2e"}))
+        await phone.send(json.dumps({"type": "hello", "width": W, "height": H, "user_agent": "pipeline-test"}))
         for t in range(FRAMES):
             await phone.send(frame(t))
             await asyncio.sleep(max(0, started + (t + 1) / FPS - time.time()))
@@ -139,7 +139,7 @@ async def run():
     OUT.mkdir(parents=True, exist_ok=True)
     (OUT / "input.jpg").write_bytes(frame(FRAMES // 2))
     (OUT / "marked.jpg").write_bytes(base64.b64decode(res[-1]["image"].split(",")[-1]))
-    print(f"  입력·마킹 이미지 저장: tests/e2e/out/")
+    print(f"  입력·마킹 이미지 저장: tests/pipeline/out/")
     return failures
 
 

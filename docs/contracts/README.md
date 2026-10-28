@@ -11,4 +11,4 @@
 | ⑤ | 결과 재수신 | visualizer → gateway | `services/visualizer/contracts/visualizer-gateway.md` | 확인됨 |
 | ⑥ | 대시보드 전달 | gateway → web | `docs/contracts/result-return.md` | 확인됨 |
 
-상태는 각 문서 첫 부분에 적힌 값이다. ②·③은 코드가 이미 이 형식으로 연결되어 전체 연결 테스트(`docker compose --profile test run --rm --build e2e`)를 통과하지만, 문서 상태는 아직 바뀌지 않았다.
+상태는 각 문서 첫 부분에 적힌 값이다. ②·③은 코드가 이미 이 형식으로 연결되어 휴대폰 없이 서비스 연결 확인(`docker compose --profile test run --rm --build pipeline`)을 통과하지만, 문서 상태는 아직 바뀌지 않았다.
