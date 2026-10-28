@@ -10,7 +10,7 @@ gateway가 프레임 1장씩 보낸다. 본문은 휴대폰이 보낸 JPEG 그�
 ```
 POST http://preprocessing:8002/preprocess
 Content-Type: image/jpeg
-X-Frame-Id: 42
+X-Frame-Id: 259363611
 X-Session-Id: a8f3k2
 X-Timestamp: 1761620000.123
 
@@ -19,7 +19,7 @@ X-Timestamp: 1761620000.123
 
 | 헤더 | 뜻 |
 |---|---|
-| `X-Frame-Id` | gateway 전체에서 1부터 늘어나는 번호. preprocessing이 응답의 `frame_id`(문자열)로 돌려준다 |
+| `X-Frame-Id` | gateway 전체에서 1씩 늘어나는 번호 (재시작해도 작아지지 않음, `frame-input.md`). preprocessing이 응답의 `frame_id`(문자열)로 돌려준다 |
 | `X-Session-Id` | 어느 휴대폰의 프레임인지 (preprocessing은 쓰지 않아도 된다) |
 | `X-Timestamp` | gateway가 받은 시각 (unix 초). gateway가 inference에 직접 넘기므로 preprocessing은 쓰지 않아도 된다 |
 

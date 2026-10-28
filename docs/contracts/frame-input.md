@@ -39,7 +39,7 @@ gateway → 휴대폰 (텍스트)
 
 긴 변 1024px은 SAM 2 입력 크기(긴 변 1024)에 맞춘 값이다. 초당 5장은 화면 미리보기용이고, 실제 처리(전처리 → 추론)로는 gateway가 최신 프레임만 골라 보낸다 (`preprocessing-input.md`). 전처리도 긴 변을 1024로 맞추므로(`TARGET_SIZE`) 두 번 줄이지 않는다.
 
-gateway는 받은 프레임마다 gateway 전체에서 1씩 늘어나는 `frame_id`와 받은 시각 `timestamp`(unix 초)를 붙여 뒤 단계로 넘긴다. 세션이 바뀌어도 번호는 되돌아가지 않는다 (visualizer가 번호 순서로 오래된 프레임을 버리기 때문).
+gateway는 받은 프레임마다 `frame_id`와 받은 시각 `timestamp`(unix 초)를 붙여 뒤 단계로 넘긴다. `frame_id`는 gateway 전체에서 1씩 늘어나고, 시작값을 시각에서 정해서(예: `259363611`) 세션이 바뀌거나 gateway를 다시 켜도 작아지지 않는다. visualizer가 번호가 작아진 프레임을 오래된 것으로 보고 버리기 때문이다.
 
 ## 연결 종료 코드
 

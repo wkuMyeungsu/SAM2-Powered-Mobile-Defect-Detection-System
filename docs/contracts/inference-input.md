@@ -16,7 +16,7 @@ POST http://inference:8003/infer
 Content-Type: application/json
 
 {
-  "frame_id": "42",
+  "frame_id": "259363611",
   "timestamp": 1761620000.123,
   "original_image": "<휴대폰이 보낸 원본 JPEG base64>",
 
