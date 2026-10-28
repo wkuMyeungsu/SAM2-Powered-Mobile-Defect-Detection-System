@@ -4,9 +4,210 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>주머니 속의 스마트 팩토리</title>
+<style>
+  :root{--bg:#eef0f2;--panel:#fff;--ink:#16191c;--muted:#5f676e;--line:#d3d8dc;--pass:#2e7d4f;--fail:#c62828;--wait:#9a6b00}
+  *{box-sizing:border-box}
+  body{margin:0;background:var(--bg);color:var(--ink);font:15px/1.5 system-ui,"Malgun Gothic",sans-serif}
+  header{display:flex;flex-wrap:wrap;gap:8px 16px;align-items:center;justify-content:space-between;padding:14px 16px;background:var(--ink);color:#fff}
+  header h1{margin:0;font-size:18px}
+  header small{display:block;color:#b8c0c6;font-weight:400;font-size:12px}
+  #conn{font-size:13px;padding:3px 10px;border-radius:999px;background:#5f676e}
+  #conn.on{background:var(--pass)}
+  #conn.part{background:var(--wait)}
+  main{display:grid;grid-template-columns:minmax(0,1fr) 300px;gap:16px;padding:16px;max-width:1400px;margin:0 auto}
+  @media (max-width:860px){main{grid-template-columns:1fr}}
+  .panel{background:var(--panel);border:1px solid var(--line);border-radius:6px;padding:12px}
+  .panel h2{margin:0 0 8px;font-size:14px;color:var(--muted)}
+  #view{position:relative;aspect-ratio:16/9;background:#1d2125;border-radius:4px;overflow:hidden}
+  #frame{width:100%;height:100%;object-fit:contain;display:block}
+  #frame:not([src]){visibility:hidden}
+  #empty{position:absolute;inset:0;display:grid;place-items:center;color:#9aa3ab;font-size:14px}
+  #empty[hidden]{display:none}
+  .meta{display:flex;gap:16px;margin-top:8px;color:var(--muted);font-size:13px;font-variant-numeric:tabular-nums}
+  .stats{display:grid;grid-template-columns:1fr 1fr;gap:8px;margin:0}
+  .stats div{border:1px solid var(--line);border-radius:4px;padding:8px}
+  .stats dt{font-size:12px;color:var(--muted)}
+  .stats dd{margin:0;font-size:24px;font-weight:700;font-variant-numeric:tabular-nums}
+  .stats .ng dd{color:var(--fail)}
+  aside{display:flex;flex-direction:column;gap:16px}
+  .qr{display:flex;gap:12px;align-items:center}
+  #qr{width:132px;height:132px;flex:none;background:var(--bg);border-radius:4px}
+  #qr:not([src]){display:none}
+  .tablewrap{max-height:320px;overflow:auto}
+  table{width:100%;border-collapse:collapse;font-size:13px;font-variant-numeric:tabular-nums}
+  th,td{text-align:left;padding:4px 6px;border-bottom:1px solid var(--line)}
+  .PASS{color:var(--pass);font-weight:700}.FAIL{color:var(--fail);font-weight:700}.WAIT{color:var(--wait);font-weight:700}
+  button{font:inherit;padding:8px 12px;border:1px solid var(--ink);border-radius:4px;background:#fff;cursor:pointer}
+  button:hover{background:var(--bg)}
+  #msg{font-size:12px;color:var(--muted);margin:6px 0 0}
+  .note{margin:8px 0 0;color:var(--muted);font-size:13px;font-variant-numeric:tabular-nums}
+</style>
 </head>
 <body>
-<h1>주머니 속의 스마트 팩토리</h1>
-<p>SAM 2 및 모바일 스트리밍 기반 실시간 불량 과자 검출 시스템</p>
+<header>
+  <h1>주머니 속의 스마트 팩토리<small>SAM 2 기반 실시간 불량 과자 검출</small></h1>
+  <span id="conn" role="status">연결 대기</span>
+</header>
+
+<main>
+  <section class="panel">
+    <h2>검사 화면</h2>
+    <div id="view">
+      <img id="frame" alt="불량 마킹된 컨베이어 화면">
+      <div id="empty">아직 받은 프레임이 없습니다</div>
+    </div>
+    <div class="meta"><span>프레임 <b id="fid">-</b></span><span>지연 <b id="lat">-</b> ms</span></div>
+  </section>
+
+  <aside>
+    <section class="panel">
+      <h2>휴대폰 연결</h2>
+      <div class="qr">
+        <img id="qr" alt="휴대폰 카메라 접속 QR 코드">
+        <p class="note" id="phone" aria-live="polite">gateway 확인 중</p>
+      </div>
+    </section>
+
+    <section class="panel">
+      <h2>집계</h2>
+      <dl class="stats">
+        <div><dt>화면 속 과자</dt><dd id="in">-</dd></div>
+        <div class="ng"><dt>화면 속 불량</dt><dd id="inng">-</dd></div>
+        <div><dt>누적 검사</dt><dd id="total">0</dd></div>
+        <div class="ng"><dt>누적 불량</dt><dd id="ng">0</dd></div>
+      </dl>
+      <p class="meta">불량률 <b id="rate">-</b></p>
+      <button id="reset" type="button">누적 초기화</button>
+      <p id="msg" aria-live="polite"></p>
+    </section>
+
+    <section class="panel">
+      <h2>성능 (최근 10초)</h2>
+      <dl class="stats">
+        <div><dt>처리량 (fps)</dt><dd id="fps">-</dd></div>
+        <div><dt>지연 p95 (ms)</dt><dd id="lp95">-</dd></div>
+      </dl>
+      <p class="note">평균 지연 <b id="lavg">-</b> ms · 처리 <b id="done">-</b> · 순서 늦어 버림 <b id="drop">-</b> · gateway 전송 실패 <b id="senderr">-</b></p>
+    </section>
+
+    <section class="panel">
+      <h2>현재 프레임 판정 <small>(gateway 연결 시)</small></h2>
+      <div class="tablewrap"><table>
+        <thead><tr><th>#</th><th>판정</th><th>원형도</th></tr></thead>
+        <tbody id="objs"></tbody>
+      </table></div>
+    </section>
+  </aside>
+</main>
+
+<script>
+// 주소와 메시지 형식은 services/visualizer/contracts/visualizer-gateway.md 제안안과 visualizer README 기준
+const WS_URL = `${location.protocol === "https:" ? "wss" : "ws"}://${location.hostname}:8001/ws/view`;
+const VIS = `${location.protocol}//${location.hostname}:8004`;
+const GW = `${location.protocol}//${location.hostname}:8001`;
+
+const $ = (id) => document.getElementById(id);
+let wsOpen = false;
+let frameUrl = null;
+
+function setConn(text, cls) { $("conn").textContent = text; $("conn").className = cls; }
+
+function setFrame(src) {
+  if (frameUrl) URL.revokeObjectURL(frameUrl);
+  frameUrl = src.startsWith("blob:") ? src : null;
+  $("frame").src = src;
+  $("empty").hidden = true;
+}
+
+function setTotals(passed, defect) {
+  $("total").textContent = passed;
+  $("ng").textContent = defect;
+  $("rate").textContent = passed ? (defect / passed * 100).toFixed(1) + "%" : "-";
+}
+
+function render(m) {
+  setFrame("data:image/jpeg;base64," + m.image);
+  $("fid").textContent = m.frame_id;
+  $("lat").textContent = m.latency_ms ?? "-";
+  const s = m.summary;
+  $("in").textContent = s.in_frame;
+  $("inng").textContent = s.defect_in_frame;
+  setTotals(s.passed_total, s.defect_total);
+  $("objs").replaceChildren(...m.objects.map((o) => {
+    const tr = document.createElement("tr");
+    for (const v of [o.id, o.result, o.circularity.toFixed(2)]) tr.insertCell().textContent = v;
+    tr.cells[1].className = o.result;
+    return tr;
+  }));
+}
+
+function connect() {
+  const ws = new WebSocket(WS_URL);
+  ws.onopen = () => { wsOpen = true; setConn("gateway 연결됨", "on"); };
+  ws.onmessage = (e) => render(JSON.parse(e.data));
+  ws.onclose = () => { wsOpen = false; setTimeout(connect, 1000); };
+}
+
+const getJson = async (path) => (await fetch(VIS + path)).json();
+
+// 성능은 항상 visualizer에서 받는다. gateway가 없을 때는 마킹 프레임과 누적 수도 visualizer에서 직접 받는다.
+async function poll() {
+  try {
+    const m = await getJson("/metrics");
+    $("fps").textContent = m.fps;
+    $("lavg").textContent = m.latency_ms.avg ?? "-";
+    $("lp95").textContent = m.latency_ms.p95 ?? "-";
+    $("done").textContent = m.counts.processed;
+    $("drop").textContent = m.counts.dropped_old;
+    $("senderr").textContent = m.counts.send_errors;
+    if (!wsOpen) {
+      const h = await getJson("/health");
+      $("fid").textContent = h.last_frame_id ?? "-";
+      setTotals(h.passed_total, h.defect_total);
+      const r = await fetch(VIS + "/latest.jpg", { cache: "no-store" });
+      if (r.ok) setFrame(URL.createObjectURL(await r.blob()));
+      setConn("visualizer 직접 연결 · gateway 대기", "part");
+    }
+  } catch {
+    if (!wsOpen) setConn("연결 끊김 · 재연결 중", "");
+  }
+  setTimeout(poll, 1000);
+}
+
+$("reset").onclick = async () => {
+  if (!confirm("누적 검사 수와 불량 수를 0으로 만들까요?")) return;
+  try {
+    const r = await fetch(VIS + "/reset", { method: "POST" });
+    $("msg").textContent = r.ok ? "초기화했습니다." : `초기화 실패 (HTTP ${r.status})`;
+  } catch {
+    $("msg").textContent = "visualizer에 연결할 수 없습니다.";
+  }
+};
+
+connect();
+poll();
+
+// QR은 gateway가 공개 HTTPS 주소(터널)를 만든 뒤에야 나온다. 그 전에는 503이라 2초마다 다시 불러온다.
+$("qr").onerror = () => { $("qr").removeAttribute("src"); setTimeout(loadQr, 2000); };
+function loadQr() { $("qr").src = `${GW}/qr.svg?t=${Date.now()}`; }
+loadQr();
+
+async function pollPhone() {
+  try {
+    const s = await (await fetch(GW + "/api/default-session")).json();
+    const lines = [
+      s.phone_connected ? "휴대폰 연결됨" : "휴대폰 미연결 · QR을 찍어 접속",
+      `받은 프레임 ${s.frames_received} · 추론 보냄 ${s.forwarded} · 오류 ${s.forward_errors}`,
+    ];
+    if (!s.tunnel.url) lines.push(`접속 주소 준비 중 (터널: ${s.tunnel.status})`);
+    if (s.last_error) lines.push(`마지막 오류: ${s.last_error}`);
+    $("phone").replaceChildren(...lines.flatMap((t, i) => i ? [document.createElement("br"), t] : [t]));
+  } catch {
+    $("phone").textContent = "gateway에 연결할 수 없습니다";
+  }
+  setTimeout(pollPhone, 2000);
+}
+pollPhone();
+</script>
 </body>
 </html>
