@@ -1,3 +1,4 @@
+import base64
 import unittest
 
 import cv2
@@ -32,6 +33,23 @@ class PreprocessTest(unittest.TestCase):
         ok, buf = cv2.imencode(".png", np.zeros((300, 400, 3), np.uint8))
         out = preprocess.run(buf.tobytes())
         self.assertEqual((out["width"], out["height"], out["scale"]), (400, 300, 1.0))
+
+    def test_original_and_timestamp(self):
+        out = preprocess.run(synthetic_frame(), "f2", timestamp=1761600000.5)
+        self.assertEqual(out["timestamp"], 1761600000.5)
+        orig = cv2.imdecode(np.frombuffer(base64.b64decode(out["original_image"]), np.uint8), cv2.IMREAD_COLOR)
+        # 리사이즈만 하고 색 보정은 하지 않았으므로 배경색이 그대로다.
+        self.assertEqual(orig.shape[:2], (out["height"], out["width"]))
+        self.assertTrue(np.allclose(orig[10, 10], (210, 215, 220), atol=4))
+
+        self.assertNotIn("timestamp", preprocess.run(synthetic_frame()))
+        raw = synthetic_frame()
+        out = preprocess.run(raw, cfg=preprocess.Config(original_mode="raw"))
+        self.assertEqual(base64.b64decode(out["original_image"]), raw)
+        out = preprocess.run(raw, cfg=preprocess.Config(original_mode="off"))
+        self.assertNotIn("original_image", out)
+        with self.assertRaises(ValueError):
+            preprocess.Config(original_mode="nope")
 
     def test_invalid_image(self):
         with self.assertRaises(preprocess.PreprocessError):

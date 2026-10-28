@@ -16,6 +16,12 @@ class Config:
     # 화면 면적 대비 이 비율보다 작은 덩어리는 노이즈로 보고 버린다.
     min_area_ratio: float = float(os.environ.get("MIN_AREA_RATIO", "0.002"))
     max_candidates: int = int(os.environ.get("MAX_CANDIDATES", "20"))
+    # 대시보드에 보여 줄 색 보정 전 이미지. resized: 리사이즈만 한 것(기본), raw: 받은 바이트 그대로, off: 보내지 않음
+    original_mode: str = os.environ.get("ORIGINAL_MODE", "resized").strip().lower()
+
+    def __post_init__(self):
+        if self.original_mode not in ("resized", "raw", "off"):
+            raise ValueError(f"ORIGINAL_MODE 는 resized/raw/off 중 하나여야 함: {self.original_mode!r}")
 
 
 class PreprocessError(ValueError):
@@ -97,21 +103,26 @@ def encode_jpeg(img: np.ndarray, quality: int) -> bytes:
     return buf.tobytes()
 
 
-def run(data: bytes, frame_id=None, cfg: Config = Config()) -> dict:
+def b64(data: bytes) -> str:
+    return base64.b64encode(data).decode("ascii")
+
+
+def run(data: bytes, frame_id=None, cfg: Config = Config(), timestamp=None) -> dict:
     start = time.perf_counter()
     img = decode(data)
     oh, ow = img.shape[:2]
 
     img, scale = resize(img, cfg.target_size)
+    resized = img
     img = cv2.GaussianBlur(img, (3, 3), 0)
     img = gray_world(img)
     img = clahe(img)
     candidates = find_candidates(img, cfg)
 
     h, w = img.shape[:2]
-    return {
+    out = {
         "frame_id": frame_id,
-        "image": base64.b64encode(encode_jpeg(img, cfg.jpeg_quality)).decode("ascii"),
+        "image": b64(encode_jpeg(img, cfg.jpeg_quality)),
         "format": "jpeg",
         "width": w,
         "height": h,
@@ -119,5 +130,14 @@ def run(data: bytes, frame_id=None, cfg: Config = Config()) -> dict:
         "original_height": oh,
         "scale": scale,
         "candidates": candidates,
-        "elapsed_ms": round((time.perf_counter() - start) * 1000, 1),
     }
+    # 색 보정한 image 는 SAM 2 용이고, 대시보드에는 실제 색을 보여 주려고 보정 전 이미지를 함께 넘긴다.
+    # inference 의 contour 는 0~1 좌표라 원본 크기가 달라도 visualizer 가 맞춰 그린다.
+    if cfg.original_mode == "resized":
+        out["original_image"] = b64(encode_jpeg(resized, cfg.jpeg_quality))
+    elif cfg.original_mode == "raw":
+        out["original_image"] = b64(data)
+    if timestamp is not None:
+        out["timestamp"] = timestamp
+    out["elapsed_ms"] = round((time.perf_counter() - start) * 1000, 1)
+    return out
