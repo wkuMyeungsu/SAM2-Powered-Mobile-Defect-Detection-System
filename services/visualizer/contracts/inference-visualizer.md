@@ -21,20 +21,34 @@
 }
 ```
 
-| 필드 | 타입 | 설명 |
-|---|---|---|
-| `frame_id` | int | gateway가 붙인 번호입니다. 바꾸지 말고 그대로 전달해 주세요. |
-| `timestamp` | float | gateway가 프레임을 받은 시각(unix 초)입니다. 그대로 전달해 주세요. |
-| `image` | string | **원본** 프레임 JPEG/PNG base64입니다. `data:image/jpeg;base64,` 접두어는 있어도 되고 없어도 됩니다. |
-| `objects` | list | 과자 하나당 한 개입니다. 과자가 없으면 `[]`로 보내 주세요. |
-| `objects[].contour` | `[[x, y], ...]` | 마스크 외곽선입니다. **0~1 정규화 좌표**(x ÷ 이미지 너비, y ÷ 이미지 높이)로, 점은 3개 이상이어야 합니다. |
-| `objects[].circularity` | float | `4π × 면적 / 둘레²` 값입니다. |
-| `objects[].result` | `"PASS"` \| `"FAIL"` | 판정 결과입니다. |
+| 필드 | 타입 | 필수 | 설명 |
+|---|---|---|---|
+| `frame_id` | int 또는 string | ✅ | gateway가 붙인 번호입니다. 바꾸지 말고 그대로 전달해 주세요. preprocessing처럼 `"123"` 문자열이어도 됩니다. 숫자(또는 숫자 문자열)여야 순서 정리가 됩니다. |
+| `timestamp` | float | | gateway가 프레임을 받은 시각(unix 초)입니다. 있으면 그대로 전달해 주세요. 없으면 지연시간만 표시하지 않습니다. |
+| `image` | string | ✅ | 프레임 JPEG/PNG base64입니다. preprocessing 결과 이미지를 그대로 보내셔도 됩니다. `data:image/jpeg;base64,` 접두어는 있어도 되고 없어도 됩니다. |
+| `width`, `height` | int | | `contour`가 픽셀 좌표일 때, 그 좌표의 기준 이미지 크기입니다. preprocessing 응답의 `width`, `height`를 그대로 넣어 주시면 됩니다. 없으면 `image` 크기를 씁니다. |
+| `objects` | list | | 과자 하나당 한 개입니다. 과자가 없으면 `[]`로 보내 주세요. |
+| `objects[].contour` | `[[x, y], ...]` | ✅ | 마스크 외곽선입니다. 점은 3개 이상이어야 합니다. **0~1 정규화 좌표**를 권장하고, **픽셀 좌표도 받습니다** (값이 1보다 크면 픽셀 좌표로 봅니다). |
+| `objects[].circularity` | float | ✅ | `4π × 면적 / 둘레²` 값입니다. |
+| `objects[].result` | `"PASS"` \| `"FAIL"` | ✅ | 판정 결과입니다. |
+
+preprocessing 응답을 받아 그대로 이어 붙이는 경우의 예시입니다.
+
+```json
+{
+  "frame_id": "123",
+  "image": "<preprocessing 이 돌려준 image>",
+  "width": 1024, "height": 576,
+  "objects": [
+    { "contour": [[319, 182], [427, 290], [319, 395], [214, 290]], "circularity": 0.62, "result": "FAIL" }
+  ]
+}
+```
 
 ## 확인 부탁드리는 점
 
-1. **원본 이미지**: preprocessing에서 크기를 줄였다면 줄인 이미지를 보내셔도 괜찮습니다. 좌표가 0~1이라 visualizer가 어느 크기에든 맞춰 그립니다. 다만 화면 품질을 위해 원본을 보내 주시면 좋겠습니다.
-2. **좌표 정규화**: 픽셀 좌표를 그대로 보내면 이미지 크기가 바뀌었을 때 위치가 어긋납니다. 꼭 0~1로 변환해서 보내 주세요.
+1. **이미지**: preprocessing 결과 이미지는 색 보정(화이트밸런스, CLAHE)이 되어 있어서 대시보드에서 실제 색과 다르게 보입니다. 원본을 함께 넘길 수 있으면 원본을 보내 주세요. 어렵다면 preprocessing 결과 이미지로도 동작합니다. (gateway·preprocessing과 함께 정할 부분입니다.)
+2. **좌표**: 0~1 좌표와 픽셀 좌표 둘 다 받습니다. 픽셀 좌표라면 그 좌표가 기준으로 하는 이미지 크기를 `width`, `height`로 함께 보내 주세요. 0~1로 바꾸는 코드는 아래와 같습니다.
    ```python
    contours, _ = cv2.findContours(mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
    c = max(contours, key=cv2.contourArea)
@@ -61,4 +75,4 @@
 | `dropped` | 이미 더 최신 프레임을 보냈기 때문에 버렸습니다. inference를 여러 대 띄우면 정상적으로 발생합니다. |
 | `gateway_error` | 마킹은 했지만 gateway 전송에 실패했습니다. |
 
-필드가 빠지면 422, 이미지가 깨졌으면 400을 응답합니다.
+필드가 빠졌거나 이미지가 깨졌으면 400을 응답합니다. 오류 본문은 preprocessing과 같은 `{"error": "..."}` 형식입니다.
