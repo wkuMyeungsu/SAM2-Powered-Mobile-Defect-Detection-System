@@ -80,7 +80,7 @@
         <dt>처리로 보낸 프레임</dt><dd id="forwarded">0</dd>
         <dt>돌아온 결과</dt><dd id="results">0</dd>
         <dt>전달 실패</dt><dd id="errors">0</dd>
-        <dt>결과 시간 초과</dt><dd id="timeouts">0</dd>
+        <dt>추론이 바빠 건너뜀</dt><dd id="busy">0</dd>
       </dl>
       <p class="error" id="lastError" hidden></p>
     </section>
@@ -163,7 +163,7 @@
   function showStatus(s) {
     tone($("phone"), s.phone_connected ? "휴대폰 연결됨" : "휴대폰 연결 안 됨", s.phone_connected ? "ok" : "");
     $("received").textContent = s.frames_received; $("forwarded").textContent = s.forwarded;
-    $("results").textContent = s.results; $("errors").textContent = s.forward_errors; $("timeouts").textContent = s.forward_timeouts;
+    $("results").textContent = s.results; $("errors").textContent = s.forward_errors; $("busy").textContent = s.inference_busy;
     $("lastError").hidden = !s.last_error; $("lastError").textContent = s.last_error ? `최근 오류: ${s.last_error}` : "";
   }
 
@@ -178,9 +178,15 @@
         showImage($("result"), msg.image);
         drawCandidates($("result"), msg.result);
         $("stage").textContent = { preprocessing: "전처리 결과", echo: "echo 결과" }[msg.stage] || "판정 결과";
-        const v = (msg.result && msg.result.verdict) || "";
-        const count = msg.result && Array.isArray(msg.result.candidates) ? `후보 ${msg.result.candidates.length}개` : "";
-        $("verdict").textContent = { ok: "정상", defect: "불량", none: "대상 없음" }[v] || v || count; $("verdict").dataset.v = v;
+        const r = msg.result || {};
+        let text = "", v = "";
+        if (r.summary) {  // visualizer 최종 결과
+          v = r.summary.defect_in_frame > 0 ? "defect" : "ok";
+          text = `화면 ${r.summary.in_frame}개 중 불량 ${r.summary.defect_in_frame}개 (누적 통과 ${r.summary.passed_total}, 불량 ${r.summary.defect_total})`;
+        } else if (Array.isArray(r.candidates)) {
+          text = `후보 ${r.candidates.length}개`;
+        }
+        $("verdict").textContent = text; $("verdict").dataset.v = v;
         $("resultMeta").textContent = `#${msg.frame_id}` + (msg.latency_ms != null ? `, ${msg.latency_ms}ms` : "");
         $("resultJson").textContent = JSON.stringify(msg.result, null, 2); $("resultJson").hidden = false;
       }

@@ -27,7 +27,8 @@ JPEG_PROGRESSIVE = base64.b64decode(
 
 
 def make_client(monkeypatch, **env):
-    defaults = {"GATEWAY_TUNNEL": "off", "GATEWAY_FORWARD_MODE": "echo", "GATEWAY_PREVIEW_FPS": "1000", "GATEWAY_PUBLIC_URL": ""}
+    defaults = {"GATEWAY_TUNNEL": "off", "GATEWAY_FORWARD_MODE": "echo", "GATEWAY_PREVIEW_FPS": "1000", "GATEWAY_PUBLIC_URL": "",
+                "GATEWAY_FORWARD_INTERVAL": "0", "GATEWAY_INFERENCE_URL": "http://inference:8003/infer"}
     for key, value in {**defaults, **env}.items():
         monkeypatch.setenv(key, value)
     return TestClient(app)
@@ -36,7 +37,7 @@ def make_client(monkeypatch, **env):
 def receive_until(ws, kind, limit=20):
     for _ in range(limit):
         msg = ws.receive_json()
-        if msg["type"] == kind:
+        if msg.get("type") == kind:
             return msg
     raise AssertionError(f"{kind} 메시지를 받지 못함")
 
@@ -48,6 +49,17 @@ def wait_for(condition, timeout=3.0):
             return True
         time.sleep(0.02)
     return False
+
+
+def visualizer_result(frame_id, **extra):
+    """visualizer가 POST /result로 보내는 형식 (services/visualizer/contracts/visualizer-gateway.md)."""
+    return {
+        "frame_id": frame_id, "timestamp": time.time() - 0.2, "latency_ms": 200,
+        "image": base64.b64encode(JPEG_PROGRESSIVE).decode(),
+        "summary": {"in_frame": 3, "defect_in_frame": 1, "passed_total": 10, "defect_total": 2},
+        "objects": [{"id": 17, "result": "FAIL", "circularity": 0.62}],
+        **extra,
+    }
 
 
 def test_jpeg_size():
@@ -74,13 +86,18 @@ def test_health_and_session(monkeypatch):
         assert c.get("/phone").status_code == 200 and c.get("/").status_code == 200
 
 
-def test_qr_uses_public_url(monkeypatch):
+def test_qr_uses_public_url_and_default_session(monkeypatch):
     with make_client(monkeypatch, GATEWAY_PUBLIC_URL="https://demo.example.com/") as c:
         info = c.post("/api/sessions").json()
         assert info["phone_url"] == f"https://demo.example.com/phone?s={info['session_id']}"
         r = c.get(f"/api/sessions/{info['session_id']}/qr.svg")
         assert r.status_code == 200 and r.headers["content-type"].startswith("image/svg+xml")
         assert r.content.startswith(b'<svg xmlns="http://www.w3.org/2000/svg"')  # 없으면 <img>에서 깨진다
+
+        # web 대시보드용: 세션을 따로 만들지 않아도 기본 세션 QR을 준다. 여러 번 불러도 같은 세션
+        assert c.get("/qr.svg").status_code == 200
+        first, second = c.get("/api/default-session").json(), c.get("/api/default-session").json()
+        assert first["session_id"] == second["session_id"] != info["session_id"]
 
 
 def test_unknown_session_closes_4404(monkeypatch):
@@ -92,22 +109,39 @@ def test_unknown_session_closes_4404(monkeypatch):
 
 
 def test_echo_mode_end_to_end(monkeypatch):
-    """휴대폰 → gateway → (echo) → 보는 화면: 설정, 미리보기, 결과가 순서대로 온다."""
+    """휴대폰 → gateway → (echo) → 점검 화면과 web 대시보드."""
     with make_client(monkeypatch) as c:
         sid = c.post("/api/sessions").json()["session_id"]
-        with c.websocket_connect(f"/ws/view/{sid}") as view:
+        with c.websocket_connect("/ws/view") as dashboard, c.websocket_connect(f"/ws/view/{sid}") as view:
             assert view.receive_json()["phone_connected"] is False
             with c.websocket_connect(f"/ws/phone/{sid}") as phone:
                 assert phone.receive_json() == {"type": "config", "fps": 5, "max_side": 1024, "quality": 0.7}
                 phone.send_text(json.dumps({"type": "hello", "width": 40, "height": 30, "user_agent": "test"}))
                 phone.send_bytes(JPEG)
                 frame = receive_until(view, "frame")
-                assert frame["frame_id"] == 1 and frame["image"].startswith("data:image/jpeg;base64,")
+                assert frame["image"].startswith("data:image/jpeg;base64,")
                 result = receive_until(view, "result")
-                assert result["frame_id"] == 1 and result["stage"] == "echo"
-                assert result["latency_ms"] is not None and result["latency_ms"] >= 0
+                assert result["frame_id"] == frame["frame_id"] and result["stage"] == "echo" and result["latency_ms"] >= 0
                 status = receive_until(view, "status")
                 assert status["phone_connected"] is True and status["phone_info"]["width"] == 40
+
+                # web 대시보드는 visualizer 형식 그대로 받는다 (type 필드 없음, image는 data: 없는 base64)
+                d = dashboard.receive_json()
+                assert d["frame_id"] == frame["frame_id"] and d["summary"]["passed_total"] == 0 and d["objects"] == []
+                assert base64.b64decode(d["image"]) == JPEG and isinstance(d["timestamp"], float)
+
+
+def test_frame_ids_increase_across_sessions(monkeypatch):
+    """visualizer는 frame_id 순서로 오래된 프레임을 버리므로, 세션이 바뀌어도 번호가 되돌아가면 안 된다."""
+    with make_client(monkeypatch, GATEWAY_FORWARD_MODE="off") as c:
+        ids = []
+        for _ in range(2):
+            sid = c.post("/api/sessions").json()["session_id"]
+            with c.websocket_connect(f"/ws/view/{sid}") as view, c.websocket_connect(f"/ws/phone/{sid}") as phone:
+                phone.receive_json()
+                phone.send_bytes(JPEG)
+                ids.append(receive_until(view, "frame")["frame_id"])
+        assert ids[1] > ids[0]
 
 
 def test_drops_non_jpeg(monkeypatch):
@@ -133,145 +167,150 @@ def test_second_phone_replaces_first(monkeypatch):
                 assert e.value.code == 4409
 
 
-class FakePreprocessing:
-    """preprocessing 대신 요청을 기록한다.
+class FakeStages:
+    """preprocessing(POST /preprocess)과 inference(POST /infer) 대신 요청을 기록한다."""
 
-    sync=True면 진아 님 POST /preprocess처럼 200으로 전처리 결과(이미지 포함)를 바로 돌려주고,
-    False면 202만 돌려준다 (뒤 단계가 POST /results로 결과를 보내는 방식).
-    """
+    def __init__(self, pre_status=200, infer_status=200, infer_delay=0.0):
+        self.pre_status, self.infer_status, self.infer_delay = pre_status, infer_status, infer_delay
+        self.pre, self.infer = [], []
 
-    def __init__(self, status=202, sync=False):
-        self.status = status
-        self.sync = sync
-        self.requests = []
-
-    def __call__(self, request: httpx.Request):
-        body = request.read()
-        self.requests.append({
-            "url": str(request.url),
-            "content_type": request.headers.get("content-type"),
-            "frame_id": int(request.headers["x-frame-id"]),
-            "session_id": request.headers["x-session-id"],
-            "received_at": int(request.headers["x-received-at"]),
-            "body_is_frame": body == JPEG,
-        })
-        if self.status >= 400:
-            return httpx.Response(self.status, json={"error": "not supported"})
-        if self.sync:
-            return httpx.Response(200, json={
-                "frame_id": request.headers["x-frame-id"],
-                "image": base64.b64encode(JPEG_PROGRESSIVE).decode(),
-                "format": "jpeg", "width": 40, "height": 30, "scale": 1.0,
-                "candidates": [{"bbox": [5, 5, 20, 20], "point": [12.5, 12.5], "area": 225}],
-                "elapsed_ms": 3.1,
+    async def __call__(self, request: httpx.Request):
+        body = await request.aread()
+        if request.url.path == "/preprocess":
+            self.pre.append({"url": str(request.url), "content_type": request.headers.get("content-type"),
+                             "frame_id": request.headers["x-frame-id"], "session_id": request.headers["x-session-id"],
+                             "timestamp": float(request.headers["x-timestamp"]), "body_is_frame": body == JPEG})
+            if self.pre_status != 200:
+                return httpx.Response(self.pre_status, json={"error": "not supported"})
+            return httpx.Response(200, json={  # 진아 님 POST /preprocess 응답 형식
+                "frame_id": request.headers["x-frame-id"], "image": base64.b64encode(JPEG_PROGRESSIVE).decode(),
+                "format": "jpeg", "width": 40, "height": 30, "original_width": 40, "original_height": 30, "scale": 1.0,
+                "candidates": [{"bbox": [5, 5, 20, 20], "point": [12.5, 12.5], "area": 225}], "elapsed_ms": 3.1,
             })
-        return httpx.Response(self.status)
+        if request.url.path == "/infer":
+            self.infer.append(json.loads(body))
+            if self.infer_delay:
+                await asyncio.sleep(self.infer_delay)
+            if self.infer_status != 200:
+                return httpx.Response(self.infer_status, json={"error": "busy"})
+            return httpx.Response(200, json={"frame_id": self.infer[-1]["frame_id"], "objects": [], "visualizer": "ok"})
+        return httpx.Response(404)
 
 
 def use_fake(client, fake):
     client.app.state.forwarder.client = httpx.AsyncClient(transport=httpx.MockTransport(fake))
 
 
-def post_result(client, meta, result=None):
-    return client.post(
-        "/results",
-        files={"image": ("marked.jpg", JPEG, "image/jpeg")},
-        data={"meta": json.dumps(meta), "result": json.dumps(result if result is not None else {"verdict": "defect"})},
-    )
+def test_pipeline_calls_preprocessing_then_inference(monkeypatch):
+    """② JPEG를 /preprocess로 → ③ 그 응답에 frame_id·timestamp·원본을 붙여 /infer로 → ⑤ visualizer /result → ⑥ 화면."""
+    with make_client(monkeypatch, GATEWAY_FORWARD_MODE="pipeline") as c:
+        fake = FakeStages()
+        use_fake(c, fake)
+        sid = c.post("/api/sessions").json()["session_id"]
+        with c.websocket_connect("/ws/view") as dashboard, c.websocket_connect(f"/ws/view/{sid}") as view, \
+                c.websocket_connect(f"/ws/phone/{sid}") as phone:
+            phone.receive_json()
+            phone.send_bytes(JPEG)
+            assert wait_for(lambda: len(fake.infer) == 1)
+            pre, inf = fake.pre[0], fake.infer[0]
+            assert pre["url"] == "http://preprocessing:8002/preprocess"
+            assert pre["content_type"] == "image/jpeg" and pre["body_is_frame"] and pre["session_id"] == sid
+            assert inf["frame_id"] == pre["frame_id"] and isinstance(inf["frame_id"], str)  # 문자열 번호 (preprocessing과 같게)
+            assert abs(inf["timestamp"] - time.time()) < 5 and inf["timestamp"] == pytest.approx(pre["timestamp"], abs=0.002)
+            assert base64.b64decode(inf["original_image"]) == JPEG  # visualizer가 원본에 그리도록
+            assert inf["candidates"][0]["bbox"] == [5, 5, 20, 20] and inf["width"] == 40  # 전처리 응답 그대로
+
+            r = c.post("/result", json=visualizer_result(inf["frame_id"]))
+            assert r.status_code == 200 and r.json()["delivered"] == 2  # 대시보드 1 + 점검 화면 1
+            d = dashboard.receive_json()
+            assert d["frame_id"] == inf["frame_id"] and d["summary"]["defect_in_frame"] == 1  # 그대로 전달
+            result = receive_until(view, "result")
+            assert result["stage"] == "final" and result["frame_id"] == int(inf["frame_id"])
+            assert result["result"]["objects"][0]["result"] == "FAIL" and "image" not in result["result"]
 
 
 def test_pipeline_sends_latest_frame_only(monkeypatch):
-    """처리 중인 프레임이 있으면 기다렸다가, 결과가 오면 그 사이 쌓인 것 중 최신 1장만 보낸다."""
-    with make_client(monkeypatch, GATEWAY_FORWARD_MODE="pipeline", GATEWAY_FORWARD_INTERVAL="0") as c:
-        fake = FakePreprocessing()
-        use_fake(c, fake)
-        sid = c.post("/api/sessions").json()["session_id"]
-        with c.websocket_connect(f"/ws/view/{sid}") as view, c.websocket_connect(f"/ws/phone/{sid}") as phone:
-            phone.receive_json()
-            phone.send_bytes(JPEG)
-            assert wait_for(lambda: len(fake.requests) == 1)
-            first = fake.requests[0]
-            assert first["url"] == "http://preprocessing:8002/preprocess"
-            assert first["content_type"] == "image/jpeg" and first["body_is_frame"]  # 원본 JPEG 그대로
-            assert first["session_id"] == sid and first["frame_id"] == 1 and first["received_at"] > 0
-
-            phone.send_bytes(JPEG)
-            phone.send_bytes(JPEG)
-            assert wait_for(lambda: c.get(f"/api/sessions/{sid}").json()["frames_received"] == 3)
-            time.sleep(0.2)
-            assert len(fake.requests) == 1  # 결과가 오기 전에는 더 보내지 않는다
-
-            r = post_result(c, {"session_id": sid, "frame_id": 1}, {"verdict": "defect", "items": [{"id": 1, "verdict": "defect"}]})
-            assert r.status_code == 200 and r.json()["delivered"] == 1
-            result = receive_until(view, "result")
-            assert result["frame_id"] == 1 and result["stage"] == "final" and result["result"]["verdict"] == "defect"
-
-            assert wait_for(lambda: len(fake.requests) == 2)
-            assert fake.requests[1]["frame_id"] == 3  # 2번은 건너뛰고 최신 3번
-
-
-
-def test_sync_preprocessing_result_goes_to_view(monkeypatch):
-    """preprocessing이 200으로 전처리 결과를 바로 주면 화면에 보내고, 기다리지 않고 다음 프레임을 보낸다."""
-    with make_client(monkeypatch, GATEWAY_FORWARD_MODE="pipeline", GATEWAY_FORWARD_INTERVAL="0", GATEWAY_FORWARD_TIMEOUT="30") as c:
-        fake = FakePreprocessing(sync=True)
-        use_fake(c, fake)
-        sid = c.post("/api/sessions").json()["session_id"]
-        with c.websocket_connect(f"/ws/view/{sid}") as view, c.websocket_connect(f"/ws/phone/{sid}") as phone:
-            phone.receive_json()
-            phone.send_bytes(JPEG)
-            result = receive_until(view, "result")
-            assert result["stage"] == "preprocessing" and result["frame_id"] == 1
-            assert result["image"] == "data:image/jpeg;base64," + base64.b64encode(JPEG_PROGRESSIVE).decode()  # 전처리된 이미지
-            assert result["result"]["candidates"][0]["bbox"] == [5, 5, 20, 20] and "image" not in result["result"]
-            phone.send_bytes(JPEG)
-            assert wait_for(lambda: len(fake.requests) == 2, timeout=2)  # 결과 대기 시간(30초)을 기다리지 않는다
-            assert c.get(f"/api/sessions/{sid}").json()["forward_timeouts"] == 0
-
-def test_pipeline_error_is_recorded(monkeypatch):
+    """추론 중에 들어온 프레임은 최신 1장만 남고, 추론이 끝나면 그 1장을 보낸다."""
     with make_client(monkeypatch, GATEWAY_FORWARD_MODE="pipeline") as c:
-        use_fake(c, FakePreprocessing(status=501))  # 지금 preprocessing 뼈대처럼 POST를 처리하지 못하는 경우
+        fake = FakeStages(infer_delay=0.5)
+        use_fake(c, fake)
+        sid = c.post("/api/sessions").json()["session_id"]
+        with c.websocket_connect(f"/ws/view/{sid}") as view, c.websocket_connect(f"/ws/phone/{sid}") as phone:
+            phone.receive_json()
+            phone.send_bytes(JPEG)
+            first = receive_until(view, "frame")["frame_id"]
+            assert wait_for(lambda: len(fake.infer) == 1)
+            phone.send_bytes(JPEG)
+            phone.send_bytes(JPEG)
+            phone.send_bytes(JPEG)
+            assert wait_for(lambda: c.get(f"/api/sessions/{sid}").json()["frames_received"] == 4)
+            assert wait_for(lambda: len(fake.infer) == 2, timeout=3)
+            assert int(fake.infer[1]["frame_id"]) == first + 3  # 중간 2장은 건너뛰고 최신
+
+
+def test_inference_busy_is_skipped_not_error(monkeypatch):
+    with make_client(monkeypatch, GATEWAY_FORWARD_MODE="pipeline") as c:
+        use_fake(c, FakeStages(infer_status=503))
+        sid = c.post("/api/sessions").json()["session_id"]
+        with c.websocket_connect(f"/ws/phone/{sid}") as phone:
+            phone.receive_json()
+            phone.send_bytes(JPEG)
+            assert wait_for(lambda: c.get(f"/api/sessions/{sid}").json()["inference_busy"] == 1)
+            assert c.get(f"/api/sessions/{sid}").json()["forward_errors"] == 0
+
+
+def test_without_inference_shows_preprocessing(monkeypatch):
+    """GATEWAY_INFERENCE_URL을 비우면 전처리 결과(이미지, 후보 영역)를 점검 화면에 보여 준다."""
+    with make_client(monkeypatch, GATEWAY_FORWARD_MODE="pipeline", GATEWAY_INFERENCE_URL="") as c:
+        fake = FakeStages()
+        use_fake(c, fake)
+        sid = c.post("/api/sessions").json()["session_id"]
+        with c.websocket_connect(f"/ws/view/{sid}") as view, c.websocket_connect(f"/ws/phone/{sid}") as phone:
+            phone.receive_json()
+            phone.send_bytes(JPEG)
+            result = receive_until(view, "result")
+            assert result["stage"] == "preprocessing" and result["result"]["candidates"][0]["bbox"] == [5, 5, 20, 20]
+            assert result["image"] == "data:image/jpeg;base64," + base64.b64encode(JPEG_PROGRESSIVE).decode()
+            assert fake.infer == []
+
+
+def test_inference_down_records_error_and_shows_preprocessing(monkeypatch):
+    with make_client(monkeypatch, GATEWAY_FORWARD_MODE="pipeline") as c:
+        use_fake(c, FakeStages(infer_status=500))
+        sid = c.post("/api/sessions").json()["session_id"]
+        with c.websocket_connect(f"/ws/view/{sid}") as view, c.websocket_connect(f"/ws/phone/{sid}") as phone:
+            phone.receive_json()
+            phone.send_bytes(JPEG)
+            assert receive_until(view, "result")["stage"] == "preprocessing"
+            assert wait_for(lambda: "inference 응답 500" in (c.get(f"/api/sessions/{sid}").json()["last_error"] or ""))
+
+
+def test_preprocessing_error_is_recorded(monkeypatch):
+    with make_client(monkeypatch, GATEWAY_FORWARD_MODE="pipeline") as c:
+        fake = FakeStages(pre_status=501)  # dev의 preprocessing 뼈대처럼 POST를 처리하지 못하는 경우
+        use_fake(c, fake)
         sid = c.post("/api/sessions").json()["session_id"]
         with c.websocket_connect(f"/ws/phone/{sid}") as phone:
             phone.receive_json()
             phone.send_bytes(JPEG)
             assert wait_for(lambda: c.get(f"/api/sessions/{sid}").json()["forward_errors"] == 1)
             info = c.get(f"/api/sessions/{sid}").json()
-            assert "501" in info["last_error"] and info["inflight_frame_id"] is None
+            assert "preprocessing 응답 501" in info["last_error"] and info["inflight_frame_id"] is None and fake.infer == []
 
 
-def test_timeout_frees_slot(monkeypatch):
-    with make_client(monkeypatch, GATEWAY_FORWARD_MODE="pipeline", GATEWAY_FORWARD_TIMEOUT="0.3", GATEWAY_FORWARD_INTERVAL="0") as c:
-        fake = FakePreprocessing()
-        use_fake(c, fake)
-        sid = c.post("/api/sessions").json()["session_id"]
-        with c.websocket_connect(f"/ws/phone/{sid}") as phone:
-            phone.receive_json()
-            phone.send_bytes(JPEG)
-            assert wait_for(lambda: len(fake.requests) == 1)
-            phone.send_bytes(JPEG)
-            assert wait_for(lambda: len(fake.requests) == 2, timeout=2)  # 결과 없이 0.3초 뒤 다음 프레임
-            assert c.get(f"/api/sessions/{sid}").json()["forward_timeouts"] == 1
-
-
-def test_results_validation(monkeypatch):
+def test_result_validation(monkeypatch):
     with make_client(monkeypatch) as c:
-        sid = c.post("/api/sessions").json()["session_id"]
-        assert post_result(c, {"frame_id": 1}).status_code == 400  # session_id 없음
-        assert post_result(c, {"session_id": sid, "frame_id": "x"}).status_code == 400
-        assert post_result(c, {"session_id": sid, "frame_id": 1}, result=[1, 2]).status_code == 400
-        assert post_result(c, {"session_id": "nope00", "frame_id": 1}).status_code == 404
-        assert post_result(c, {"session_id": sid, "frame_id": 1}).json() == {"delivered": 0}
+        assert c.post("/result", json={"image": "abc"}).status_code == 400  # frame_id 없음
+        assert c.post("/result", json={"frame_id": 1}).status_code == 400  # image 없음
+        assert c.post("/result", content=b"not json", headers={"Content-Type": "application/json"}).status_code in (400, 422)
+        assert c.post("/result", json=visualizer_result("999")).json() == {"delivered": 0}  # 모르는 프레임도 받는다
 
 
-def test_new_viewer_gets_last_result(monkeypatch):
+def test_new_viewers_get_last_result(monkeypatch):
     with make_client(monkeypatch) as c:
-        sid = c.post("/api/sessions").json()["session_id"]
-        post_result(c, {"session_id": sid, "frame_id": 7}, {"verdict": "ok"})
-        with c.websocket_connect(f"/ws/view/{sid}") as view:
-            assert view.receive_json()["type"] == "status"
-            last = view.receive_json()
-            assert last["type"] == "result" and last["frame_id"] == 7
+        c.post("/result", json=visualizer_result(7))
+        with c.websocket_connect("/ws/view") as dashboard:
+            assert dashboard.receive_json()["frame_id"] == 7
 
 
 # ----- 터널 -----

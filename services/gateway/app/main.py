@@ -1,6 +1,7 @@
 """gateway (C1): QR 접속, 휴대폰 프레임 받기, 처리 단계로 전달, 결과를 web으로 다시 전달.
 
 데이터 형식: docs/contracts/frame-input.md, preprocessing-input.md, result-return.md
+팀 구조도(docs/architecture.html)의 ①②③⑤⑥ 연결을 맡는다.
 """
 from __future__ import annotations
 
@@ -13,13 +14,13 @@ from pathlib import Path
 
 import httpx
 import segno
-from fastapi import FastAPI, File, Form, HTTPException, Request, Response, UploadFile, WebSocket, WebSocketDisconnect
+from fastapi import Body, FastAPI, HTTPException, Request, Response, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse
 
 from .config import load_settings
 from .forwarder import Forwarder
-from .sessions import Session, SessionStore, broadcast, data_uri, deliver_result, jpeg_size
+from .sessions import Session, SessionStore, b64, broadcast, data_uri, jpeg_size, relay_result
 from .tunnel import Tunnel
 
 log = logging.getLogger("uvicorn.error")
@@ -47,11 +48,12 @@ async def lifespan(app: FastAPI):
     app.state.settings = settings
     app.state.store = SessionStore(ttl=settings.session_ttl)
     app.state.client = httpx.AsyncClient()
-    app.state.forwarder = Forwarder(settings, app.state.client)
+    app.state.forwarder = Forwarder(settings, app.state.client, app.state.store)
     app.state.tunnel = Tunnel(settings.tunnel, settings.port, settings.public_url, settings.cloudflared_bin)
     await app.state.tunnel.start()
     housekeeping = asyncio.create_task(_housekeeping(app))
-    log.info("gateway 시작: 전달 방식=%s → %s, 터널=%s", settings.forward_mode, settings.forward_url, app.state.tunnel.status)
+    log.info("gateway 시작: 전달 방식=%s (%s → %s), 터널=%s", settings.forward_mode, settings.forward_url,
+             settings.inference_url or "inference 안 씀", app.state.tunnel.status)
     yield
     housekeeping.cancel()
     for session in app.state.store:
@@ -98,7 +100,9 @@ async def health(request: Request):
         "tunnel": s.tunnel.info(),
         "forward_mode": s.settings.forward_mode,
         "forward_url": s.settings.forward_url if s.settings.forward_mode == "pipeline" else None,
+        "inference_url": (s.settings.inference_url or None) if s.settings.forward_mode == "pipeline" else None,
         "sessions": len(s.store),
+        "dashboards": len(s.store.dashboards),
     }
 
 
@@ -129,9 +133,7 @@ async def get_session(sid: str, request: Request):
     return _session_info(request, _session_or_404(request, sid))
 
 
-@app.get("/api/sessions/{sid}/qr.svg")
-async def session_qr(sid: str, request: Request):
-    session = _session_or_404(request, sid)
+def _qr_response(request: Request, session: Session) -> Response:
     tunnel = request.app.state.tunnel
     if not tunnel.url:
         raise HTTPException(503, f"휴대폰 접속 주소가 아직 없습니다 (터널 상태: {tunnel.status}). {tunnel.error or '잠시 뒤 다시 시도하세요.'}")
@@ -139,6 +141,22 @@ async def session_qr(sid: str, request: Request):
     buf = io.BytesIO()
     qr.save(buf, kind="svg", scale=8, border=2, xmldecl=False)  # <img>로 띄우려면 xmlns가 있는 SVG 파일 형식이어야 한다
     return Response(buf.getvalue(), media_type="image/svg+xml", headers={"Cache-Control": "no-store"})
+
+
+@app.get("/api/sessions/{sid}/qr.svg")
+async def session_qr(sid: str, request: Request):
+    return _qr_response(request, _session_or_404(request, sid))
+
+
+@app.get("/qr.svg")
+async def default_qr(request: Request):
+    """기본 세션의 휴대폰 접속 QR. web 대시보드는 <img src="http://<호스트>:8001/qr.svg">만 넣으면 된다."""
+    return _qr_response(request, request.app.state.store.default())
+
+
+@app.get("/api/default-session")
+async def default_session(request: Request):
+    return _session_info(request, request.app.state.store.default())
 
 
 # ----- 휴대폰 → gateway -----
@@ -173,15 +191,14 @@ async def phone_socket(ws: WebSocket, sid: str):
                 break
             data = message.get("bytes")
             if data is not None:
-                size = jpeg_size(data) if len(data) <= settings.max_frame_bytes else None
-                if size is None:
+                if len(data) > settings.max_frame_bytes or jpeg_size(data) is None:
                     session.frames_dropped += 1
                     continue
-                frame_id = session.add_frame(data, size)
+                frame_id = state.store.add_frame(session, data)
                 now = asyncio.get_running_loop().time()
                 if preview_gap is not None and session.viewers and now - session.last_preview_at >= preview_gap:
                     session.last_preview_at = now
-                    await broadcast(session, {"type": "frame", "frame_id": frame_id, "image": data_uri(data)})
+                    await broadcast(session, {"type": "frame", "frame_id": frame_id, "image": data_uri(b64(data))})
             elif message.get("text"):
                 try:
                     payload = json.loads(message["text"])
@@ -202,8 +219,28 @@ async def phone_socket(ws: WebSocket, sid: str):
 
 # ----- gateway → web -----
 
+@app.websocket("/ws/view")
+async def dashboard_socket(ws: WebSocket):
+    """web 대시보드: visualizer가 보낸 결과 JSON을 그대로 받는다 (services/visualizer/contracts/visualizer-gateway.md)."""
+    store = ws.app.state.store
+    await ws.accept()
+    store.dashboards.add(ws)
+    try:
+        if store.last_dashboard:
+            await ws.send_text(store.last_dashboard)
+        while True:
+            message = await ws.receive()
+            if message["type"] == "websocket.disconnect":
+                break
+    except WebSocketDisconnect:
+        pass
+    finally:
+        store.dashboards.discard(ws)
+
+
 @app.websocket("/ws/view/{sid}")
 async def view_socket(ws: WebSocket, sid: str):
+    """gateway 점검 화면: 세션의 status·frame·result 메시지를 받는다."""
     await ws.accept()
     session = ws.app.state.store.get(sid)
     if session is None:
@@ -228,25 +265,12 @@ async def view_socket(ws: WebSocket, sid: str):
 
 # ----- visualizer → gateway -----
 
-@app.post("/results")
-async def receive_result(
-    request: Request,
-    image: UploadFile = File(..., description="판정이 표시된 JPEG"),
-    meta: str = Form(..., description="preprocessing이 받은 meta JSON 그대로"),
-    result: str = Form("{}", description="판정 결과 JSON"),
-):
-    try:
-        meta_obj = json.loads(meta)
-        result_obj = json.loads(result)
-        sid = str(meta_obj["session_id"])
-        frame_id = int(meta_obj["frame_id"])
-    except (ValueError, KeyError, TypeError) as e:
-        raise HTTPException(400, f"meta·result 형식 오류: {type(e).__name__}: {e}") from e
-    if not isinstance(result_obj, dict):
-        raise HTTPException(400, "result는 JSON 객체여야 합니다.")
-    session = _session_or_404(request, sid)
-    data = await image.read()
-    if len(data) > request.app.state.settings.max_frame_bytes * 2:
+@app.post("/result")
+async def receive_result(request: Request, payload: dict = Body(...)):
+    """visualizer가 마킹 프레임과 판정을 보낸다. web 대시보드와 그 프레임의 점검 화면에 그대로 전달한다."""
+    if "frame_id" not in payload or not isinstance(payload.get("image"), str) or not payload["image"]:
+        raise HTTPException(400, "frame_id와 image(base64 JPEG)가 필요합니다.")
+    if len(payload["image"]) > request.app.state.settings.max_frame_bytes * 2:
         raise HTTPException(413, "이미지가 너무 큽니다.")
-    delivered = await deliver_result(session, frame_id, data, result_obj)
+    delivered = await relay_result(request.app.state.store, payload)
     return {"delivered": delivered}

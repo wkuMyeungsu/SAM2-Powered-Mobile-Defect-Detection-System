@@ -18,10 +18,12 @@ class Settings:
     tunnel: str  # cloudflared: 임시 HTTPS 주소 만들기 / off: 만들지 않음
     public_url: str  # 직접 정한 공개 주소. 있으면 터널 대신 쓴다
     cloudflared_bin: str
-    forward_mode: str  # pipeline: preprocessing으로 보냄 / echo: 받은 프레임을 바로 결과로 돌려줌(테스트용) / off
-    forward_url: str
+    forward_mode: str  # pipeline: preprocessing → inference로 보냄 / echo: 받은 프레임을 바로 결과로 돌려줌(테스트용) / off
+    forward_url: str  # preprocessing 주소
+    inference_url: str  # inference 주소 (""이면 부르지 않고 전처리 결과만 점검 화면에 표시)
     forward_interval: float  # 프레임을 보내는 최소 간격 (초)
-    forward_timeout: float  # 결과를 기다리는 최대 시간 (초)
+    forward_timeout: float  # preprocessing 응답을 기다리는 최대 시간 (초)
+    inference_timeout: float  # inference 응답을 기다리는 최대 시간 (초)
     phone_fps: int  # 휴대폰이 보내는 초당 장수
     frame_max_side: int  # 휴대폰이 찍는 이미지의 긴 변 (px)
     jpeg_quality: float
@@ -52,6 +54,8 @@ def load_settings() -> Settings:
         forward_url=_env("GATEWAY_FORWARD_URL", "http://preprocessing:8002/preprocess"),
         forward_interval=float(_env("GATEWAY_FORWARD_INTERVAL", "0.2")),
         forward_timeout=float(_env("GATEWAY_FORWARD_TIMEOUT", "5")),
+        inference_url=os.getenv("GATEWAY_INFERENCE_URL", "http://inference:8003/infer").strip(),
+        inference_timeout=float(_env("GATEWAY_INFERENCE_TIMEOUT", "15")),
         phone_fps=int(_env("GATEWAY_PHONE_FPS", "5")),
         frame_max_side=int(_env("GATEWAY_FRAME_MAX_SIDE", "1024")),
         jpeg_quality=float(_env("GATEWAY_JPEG_QUALITY", "0.7")),
