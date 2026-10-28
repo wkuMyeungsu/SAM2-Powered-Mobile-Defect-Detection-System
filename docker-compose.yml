@@ -58,3 +58,15 @@ services:
     environment:
       SERVICE_NAME: visualizer
       PORT: "8004"
+
+  # 전체 연결 테스트. 평소 up에는 뜨지 않는다: docker compose --profile test run --rm --build e2e
+  e2e:
+    build: ./tests/e2e
+    profiles: ["test"]
+    volumes: ["./tests/e2e/out:/out"]
+    depends_on:
+      web: { condition: service_healthy }
+      gateway: { condition: service_healthy }
+      preprocessing: { condition: service_healthy }
+      inference: { condition: service_healthy }
+      visualizer: { condition: service_healthy }
