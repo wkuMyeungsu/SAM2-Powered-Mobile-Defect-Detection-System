@@ -1,0 +1,180 @@
+<!doctype html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>gateway 점검 화면</title>
+<style>
+  :root {
+    --bg: #eef1f2;
+    --panel: #ffffff;
+    --ink: #1d2a2f;
+    --muted: #5f6f74;
+    --line: #d5dcde;
+    --ok: #23865b;
+    --wait: #b7791f;
+    --bad: #c2412d;
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: var(--bg); color: var(--ink);
+    font: 15px/1.55 -apple-system, BlinkMacSystemFont, "Apple SD Gothic Neo", "Malgun Gothic", "Noto Sans KR", sans-serif; }
+  main { max-width: 1180px; margin: 0 auto; padding: 1.5rem; display: grid; gap: 1.25rem;
+    grid-template-columns: minmax(260px, 320px) 1fr; align-items: start; }
+  @media (max-width: 820px) { main { grid-template-columns: 1fr; } }
+  h1 { font-size: 1.35rem; margin: 0 0 .25rem; letter-spacing: -.01em; }
+  h2 { font-size: 1rem; margin: 0 0 .5rem; }
+  p { margin: 0; }
+  .muted { color: var(--muted); }
+  section { background: var(--panel); border: 1px solid var(--line); border-radius: 10px; padding: 1rem 1.1rem; }
+  aside { display: grid; gap: 1.25rem; }
+  button { font: inherit; font-weight: 600; padding: .65rem 1rem; border-radius: 8px; border: 0; background: var(--ink); color: #fff; cursor: pointer; width: 100%; }
+  button:focus-visible, a:focus-visible { outline: 3px solid var(--ok); outline-offset: 2px; }
+  .qr { aspect-ratio: 1; display: grid; place-items: center; border: 1px dashed var(--line); border-radius: 8px; margin: .75rem 0; text-align: center; padding: 1rem; }
+  .qr img { width: 100%; height: auto; }
+  .sid { font-size: 1.6rem; font-weight: 700; letter-spacing: .08em; font-variant-numeric: tabular-nums; }
+  a { color: var(--ink); word-break: break-all; }
+  .chip { display: inline-flex; align-items: center; gap: .4rem; font-size: .9rem; }
+  .chip::before { content: ""; width: .55rem; height: .55rem; border-radius: 50%; background: var(--wait); }
+  .chip[data-tone="ok"]::before { background: var(--ok); }
+  .chip[data-tone="bad"]::before { background: var(--bad); }
+  dl { display: grid; grid-template-columns: auto 1fr; gap: .3rem .9rem; margin: .5rem 0 0; font-variant-numeric: tabular-nums; }
+  dt { color: var(--muted); }
+  dd { margin: 0; text-align: right; }
+  .views { display: grid; grid-template-columns: 1fr 1fr; gap: 1.25rem; }
+  @media (max-width: 1000px) { .views { grid-template-columns: 1fr; } }
+  figure { margin: 0; }
+  .screen { aspect-ratio: 4 / 3; background: #dfe5e6; border-radius: 8px; display: grid; place-items: center; overflow: hidden; color: var(--muted); text-align: center; padding: 1rem; }
+  .screen img { width: 100%; height: 100%; object-fit: contain; }
+  figcaption { display: flex; justify-content: space-between; gap: 1rem; margin-top: .5rem; font-size: .9rem; color: var(--muted); font-variant-numeric: tabular-nums; }
+  .verdict { font-weight: 700; color: var(--ink); }
+  .verdict[data-v="defect"] { color: var(--bad); }
+  .verdict[data-v="ok"] { color: var(--ok); }
+  pre { margin: .75rem 0 0; background: #f5f7f8; border: 1px solid var(--line); border-radius: 8px; padding: .75rem; font-size: .8rem; max-height: 220px; overflow: auto; }
+  .error { color: var(--bad); font-size: .9rem; margin-top: .5rem; }
+</style>
+</head>
+<body>
+<main>
+  <aside>
+    <section>
+      <h1>gateway 점검 화면</h1>
+      <p class="muted">휴대폰 연결과 프레임 흐름을 확인합니다. 실제 대시보드는 web(8000)에 있습니다.</p>
+    </section>
+    <section>
+      <h2>휴대폰 연결</h2>
+      <button id="create">새 세션 만들기</button>
+      <div class="qr" id="qr"><p class="muted">세션을 만들면 여기에 QR이 나옵니다.</p></div>
+      <p class="sid" id="sid" aria-label="세션 ID"></p>
+      <p><span class="chip" id="tunnel">터널 확인 중</span></p>
+      <p class="error" id="tunnelError" hidden></p>
+      <p id="links" class="muted" hidden></p>
+    </section>
+    <section>
+      <h2>처리 현황</h2>
+      <p><span class="chip" id="phone">휴대폰 연결 안 됨</span></p>
+      <dl>
+        <dt>받은 프레임</dt><dd id="received">0</dd>
+        <dt>처리로 보낸 프레임</dt><dd id="forwarded">0</dd>
+        <dt>돌아온 결과</dt><dd id="results">0</dd>
+        <dt>전달 실패</dt><dd id="errors">0</dd>
+        <dt>결과 시간 초과</dt><dd id="timeouts">0</dd>
+      </dl>
+      <p class="error" id="lastError" hidden></p>
+    </section>
+  </aside>
+
+  <section>
+    <div class="views">
+      <figure>
+        <div class="screen" id="preview">휴대폰이 촬영을 시작하면 원본이 보입니다.</div>
+        <figcaption><span>원본 미리보기</span><span id="previewId"></span></figcaption>
+      </figure>
+      <figure>
+        <div class="screen" id="result">처리 결과가 돌아오면 여기에 보입니다.</div>
+        <figcaption><span>판정 결과 <span class="verdict" id="verdict"></span></span><span id="resultMeta"></span></figcaption>
+      </figure>
+    </div>
+    <pre id="resultJson" hidden></pre>
+  </section>
+</main>
+
+<script>
+(() => {
+  const $ = (id) => document.getElementById(id);
+  let session = null, ws = null, poll = null;
+
+  function tone(el, text, t) { el.textContent = text; el.dataset.tone = t || ""; }
+  function showImage(box, src) {
+    let img = box.querySelector("img");
+    if (!img) { box.textContent = ""; img = document.createElement("img"); img.alt = ""; box.appendChild(img); }
+    img.src = src;
+  }
+
+  function showTunnel(info) {
+    const t = info.tunnel;
+    const labels = { ready: "휴대폰 접속 주소 준비됨", manual: "지정한 공개 주소 사용", starting: "휴대폰 접속 주소 만드는 중", off: "터널 꺼짐 (PC 카메라로만 테스트)", error: "휴대폰 접속 주소를 만들지 못함" };
+    tone($("tunnel"), labels[t.status] || t.status, t.url ? "ok" : t.status === "starting" ? "" : "bad");
+    $("tunnelError").hidden = !t.error; $("tunnelError").textContent = t.error || "";
+  }
+
+  function showSession(info) {
+    session = info;
+    $("sid").textContent = info.session_id;
+    showTunnel(info);
+    if (info.phone_url && !$("qr").querySelector("img")) {
+      $("qr").textContent = "";
+      const img = document.createElement("img"); img.alt = "휴대폰 접속 QR"; img.src = info.qr_url + "?t=" + Date.now();
+      $("qr").appendChild(img);
+    } else if (!info.phone_url) {
+      $("qr").innerHTML = '<p class="muted">휴대폰 접속 주소가 준비되면 QR이 나옵니다.</p>';
+    }
+    const links = [];
+    if (info.phone_url) links.push(`휴대폰 주소: <a href="${info.phone_url}" target="_blank" rel="noopener">${info.phone_url}</a>`);
+    links.push(`PC 카메라로 테스트: <a href="${info.phone_url_local}" target="_blank" rel="noopener">이 PC에서 촬영 화면 열기</a>`);
+    $("links").innerHTML = links.join("<br>"); $("links").hidden = false;
+  }
+
+  function showStatus(s) {
+    tone($("phone"), s.phone_connected ? "휴대폰 연결됨" : "휴대폰 연결 안 됨", s.phone_connected ? "ok" : "");
+    $("received").textContent = s.frames_received; $("forwarded").textContent = s.forwarded;
+    $("results").textContent = s.results; $("errors").textContent = s.forward_errors; $("timeouts").textContent = s.forward_timeouts;
+    $("lastError").hidden = !s.last_error; $("lastError").textContent = s.last_error ? `최근 오류: ${s.last_error}` : "";
+  }
+
+  function watch(info) {
+    if (ws) ws.close();
+    ws = new WebSocket(info.view_url);
+    ws.onmessage = (event) => {
+      const msg = JSON.parse(event.data);
+      if (msg.type === "status") showStatus(msg);
+      else if (msg.type === "frame") { showImage($("preview"), msg.image); $("previewId").textContent = `#${msg.frame_id}`; }
+      else if (msg.type === "result") {
+        showImage($("result"), msg.image);
+        const v = (msg.result && msg.result.verdict) || "";
+        $("verdict").textContent = { ok: "정상", defect: "불량", none: "대상 없음" }[v] || v; $("verdict").dataset.v = v;
+        $("resultMeta").textContent = `#${msg.frame_id}` + (msg.latency_ms != null ? `, ${msg.latency_ms}ms` : "");
+        $("resultJson").textContent = JSON.stringify(msg.result, null, 2); $("resultJson").hidden = false;
+      }
+    };
+    ws.onclose = (event) => { if (session && session.session_id === info.session_id && event.code !== 4404) setTimeout(() => watch(info), 2000); };
+  }
+
+  async function refresh() {
+    if (!session) return;
+    const r = await fetch(`/api/sessions/${session.session_id}`);
+    if (r.ok) showSession(await r.json());
+  }
+
+  $("create").addEventListener("click", async () => {
+    const r = await fetch("/api/sessions", { method: "POST" });
+    const info = await r.json();
+    $("qr").innerHTML = "";
+    showSession(info); watch(info);
+    clearInterval(poll); poll = setInterval(refresh, 3000);
+  });
+
+  fetch("/health").then((r) => r.json()).then(showTunnel).catch(() => tone($("tunnel"), "gateway에 연결할 수 없음", "bad"));
+})();
+</script>
+</body>
+</html>
