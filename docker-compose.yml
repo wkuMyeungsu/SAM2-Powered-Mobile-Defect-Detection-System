@@ -20,9 +20,9 @@ services:
   web:
     build: ./web
     restart: unless-stopped
-    ports: ["${WEB_PORT:-8000}:80"]
+    ports: ["${WEB_PORT:-8000}:8000"]
     healthcheck:
-      test: ["CMD", "wget", "-q", "--spider", "http://127.0.0.1/"]
+      test: ["CMD", "wget", "-q", "--spider", "http://127.0.0.1:8000/"]
       interval: 10s
       timeout: 3s
       retries: 5

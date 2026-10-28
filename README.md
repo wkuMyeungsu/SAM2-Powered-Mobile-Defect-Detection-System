@@ -7,13 +7,15 @@ SAM 2 및 모바일 스트리밍 기반 실시간 불량 과자 검출 시스템
 
 | 폴더 | 역할 | 담당 | 호스트 포트 | 컨테이너 주소 |
 |---|---|---|---|---|
-| `web/` | 홈페이지·대시보드 | 명수 | 8000 | `http://web` |
+| `web/` | 홈페이지·대시보드 | 명수 | 8000 | `http://web:8000` |
 | `services/gateway/` | QR, 영상 프레임 전달 (C1) | 우진 | 8001 | `http://gateway:8001` |
 | `services/preprocessing/` | 전처리 (C2) | 진아 | 8002 | `http://preprocessing:8002` |
 | `services/inference/` | SAM 2 추론 (C3) | 대희 | 8003 | `http://inference:8003` |
 | `services/visualizer/` | 영상 재수신 (C4) | 도은 | 8004 | `http://visualizer:8004` |
 
 `docs/contracts/`에는 파트 사이에 주고받는 데이터 형식을 적는다.
+
+포트는 `8000 + 파트 번호`로 정했고, 호스트 포트와 컨테이너 포트가 같다.
 
 ## 실행
 
