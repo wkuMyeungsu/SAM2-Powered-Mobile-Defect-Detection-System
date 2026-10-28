@@ -12,7 +12,7 @@
 | 메서드·주소 | `POST http://gateway:8001/results` |
 | 본문 | `multipart/form-data` |
 | `image` 필드 | 판정이 표시된 JPEG |
-| `meta` 필드 | preprocessing이 받은 `meta` JSON 그대로 (`session_id`, `frame_id` 필수) |
+| `meta` 필드 | JSON `{"session_id": ..., "frame_id": ...}`. gateway가 처음 보낸 `X-Session-Id`, `X-Frame-Id` 헤더 값 |
 | `result` 필드 | 판정 결과 JSON 문자열 |
 
 `result`의 내용은 inference → visualizer 계약을 따른다. gateway는 내용을 해석하지 않고 web에 그대로 전달한다. web이 공통으로 쓸 수 있게 최소한 아래 필드를 권장한다.
@@ -67,7 +67,7 @@ POST /api/sessions → 201
 
 {"type": "frame", "frame_id": 120, "image": "data:image/jpeg;base64,..."}
 
-{"type": "result", "frame_id": 118, "latency_ms": 840, "result": {"verdict": "defect", "items": [...]}, "image": "data:image/jpeg;base64,..."}
+{"type": "result", "stage": "final", "frame_id": 118, "latency_ms": 840, "result": {"verdict": "defect", "items": [...]}, "image": "data:image/jpeg;base64,..."}
 ```
 
 | type | 언제 | 쓰임 |
@@ -77,6 +77,14 @@ POST /api/sessions → 201
 | `result` | visualizer가 결과를 보낼 때 | 판정 화면. `image`를 `<img src>`에 그대로 넣으면 된다 |
 
 `latency_ms`는 gateway가 원본을 받은 때부터 결과가 돌아올 때까지의 시간이다.
+
+`stage`는 어느 단계의 결과인지 알려 준다.
+
+| stage | 내용 |
+|---|---|
+| `final` | visualizer가 보낸 최종 판정. `result`는 위 권장 형식 |
+| `preprocessing` | 전처리 응답 (뒤 단계가 아직 없을 때). `image`는 전처리된 이미지, `result.candidates`의 `bbox`·`point`는 그 이미지(`result.width`×`result.height`) 기준 좌표 |
+| `echo` | gateway 테스트 모드. 받은 원본을 그대로 돌려줌 |
 
 ## 정할 것
 
