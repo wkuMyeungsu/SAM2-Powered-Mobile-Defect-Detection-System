@@ -26,4 +26,4 @@ Thumbs.db
 .idea/
 
 # 테스트 결과물
-tests/e2e/out/
+tests/pipeline/out/
