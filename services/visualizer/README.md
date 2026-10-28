@@ -52,7 +52,7 @@ inference 가 preprocessing 결과 형식을 그대로 따라와도 끊기지 �
 |---|---|
 | `frame_id` 가 `"123"` 문자열 | 숫자로 바꿔 순서 정리. 숫자가 아니면 도착 순서대로 처리 |
 | `timestamp` 없음 | 지연시간만 `null` |
-| `contour` 가 픽셀 좌표 (값 > 1) | `width`/`height`(없으면 이미지 크기)로 나눠 0~1 로 변환 |
+| `contour` 가 픽셀 좌표 (값 > 2) | `width`/`height`(없으면 이미지 크기)로 나눠 0~1 로 변환 |
 | 오류 | preprocessing 과 같은 `400 {"error": "..."}` |
 
 ## 혼자 테스트하기 (inference·gateway 없이)
@@ -102,6 +102,7 @@ python services/visualizer/tests/send_sample.py --sim-dir services/visualizer/te
 | `SEND_QUEUE` | `3` | gateway 전송 대기열 크기. 넘치면 가장 오래된 프레임부터 버린다 |
 | `MAX_BODY_BYTES` | `10485760` | 요청 본문 최대 크기 (preprocessing 과 같음) |
 | `METRICS_WINDOW` | `10` | `/metrics` 의 fps·지연시간 계산 구간(초) |
+| `CORS_ORIGINS` | `*` | `/reset`, `/metrics` 를 브라우저에서 부를 수 있는 출처. web(8000) 대시보드용 |
 
 ## 성능 측정 (Scale-out 전후 비교)
 

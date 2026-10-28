@@ -19,6 +19,7 @@ import numpy as np
 from fastapi import FastAPI, HTTPException, Request, Response
 from fastapi.concurrency import run_in_threadpool
 from fastapi.exceptions import RequestValidationError
+from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field
 from starlette.exceptions import HTTPException as StarletteHTTPException
@@ -35,6 +36,7 @@ RESET_GAP = int(os.getenv("RESET_GAP", "300"))             # frame_id 가 이만
 SEND_QUEUE = int(os.getenv("SEND_QUEUE", "3"))             # gateway 전송 대기열 크기. 넘치면 가장 오래된 프레임부터 버림
 MAX_BODY = int(os.getenv("MAX_BODY_BYTES", str(10 * 1024 * 1024)))
 METRICS_WINDOW = float(os.getenv("METRICS_WINDOW", "10"))  # /metrics 의 fps·지연시간을 계산할 최근 구간(초)
+CORS_ORIGINS = os.getenv("CORS_ORIGINS", "*").split(",")    # web(8000) 대시보드가 /reset, /metrics 를 부를 수 있게
 
 COLORS = {"PASS": (0, 200, 0), "FAIL": (0, 0, 255), "WAIT": (160, 160, 160)}  # BGR
 SCAN_COLOR = (69, 90, 255)
@@ -65,6 +67,7 @@ class Tracked:
     cy: float
     result: str
     counted: bool = False
+    tid: int = -1  # 과자 고정 번호. 프레임이 바뀌어도 같은 과자면 같은 번호
 
 
 @dataclass
@@ -72,6 +75,7 @@ class State:
     last_id: int = -1      # 순서 확인을 통과한 마지막 frame_id
     last_queued: int = -1  # gateway 전송 대기열에 넣은 마지막 frame_id
     prev: list[Tracked] = field(default_factory=list)
+    next_tid: int = 1
     passed_total: int = 0
     defect_total: int = 0
     latest_jpeg: bytes | None = None
@@ -126,11 +130,12 @@ def centroid(pts: np.ndarray) -> tuple[float, float]:
     return m["m10"] / m["m00"], m["m01"] / m["m00"]
 
 
-def count_crossings(current: list[Tracked]) -> None:
-    """직전 프레임의 과자와 짝을 지어, 검사선을 처음 넘는 순간에만 1개로 센다.
+def track(current: list[Tracked]) -> None:
+    """직전 프레임의 과자와 짝을 지어 고정 번호를 이어 붙이고, 검사선을 처음 넘는 순간에만 1개로 센다.
 
     짝은 같은 줄에서 왼쪽으로 조금 움직인(또는 JITTER 만큼 흔들린) 가장 가까운 과자다.
     센 표시를 짝에게 물려주므로, 마스크가 흔들려 과자 중심이 검사선을 넘나들어도 다시 세지 않는다.
+    짝이 없는 과자(새로 화면에 들어온 과자)는 새 번호를 받는다.
     """
     pairs = sorted(
         (abs(p.cx - c.cx), i, j)
@@ -146,10 +151,15 @@ def count_crossings(current: list[Tracked]) -> None:
         used_prev.add(j)
         c, p = current[i], state.prev[j]
         c.counted = p.counted
+        c.tid = p.tid
         if not c.counted and c.result != "WAIT" and p.cx >= SCAN_X > c.cx:
             c.counted = True
             state.passed_total += 1
             state.defect_total += c.result == "FAIL"
+    for c in current:
+        if c.tid < 0:
+            c.tid = state.next_tid
+            state.next_tid += 1
     state.prev = current
 
 
@@ -158,16 +168,16 @@ def put_label(img: np.ndarray, text: str, org: tuple[int, int], color, scale: fl
     cv2.putText(img, text, org, cv2.FONT_HERSHEY_SIMPLEX, scale, color, thick, cv2.LINE_AA)
 
 
-def draw(img: np.ndarray, items: list[tuple[np.ndarray, str, float]], hud: list[str]) -> np.ndarray:
+def draw(img: np.ndarray, items: list[tuple[np.ndarray, str, float, int]], hud: list[str]) -> np.ndarray:
     h, w = img.shape[:2]
     scale = max(0.4, w / 1800)
     thick = max(1, round(w / 600))
 
-    polys = [(np.round(pts * [w, h]).astype(np.int32), result, circ) for pts, result, circ in items if len(pts) >= 3]
+    polys = [(np.round(pts * [w, h]).astype(np.int32), result, circ, tid) for pts, result, circ, tid in items]
 
     # 불량 영역은 반투명으로 채운다
     overlay = img.copy()
-    for px, result, _ in polys:
+    for px, result, _, _ in polys:
         if result == "FAIL":
             cv2.fillPoly(overlay, [px], COLORS["FAIL"])
     img = cv2.addWeighted(overlay, 0.35, img, 0.65, 0)
@@ -175,10 +185,10 @@ def draw(img: np.ndarray, items: list[tuple[np.ndarray, str, float]], hud: list[
     sx = int(SCAN_X * w)
     cv2.line(img, (sx, 0), (sx, h), SCAN_COLOR, 1, cv2.LINE_AA)
 
-    for px, result, circ in polys:
+    for px, result, circ, tid in polys:
         color = COLORS[result]
         cv2.polylines(img, [px], True, color, thick + 1, cv2.LINE_AA)
-        text = f"{result} {circ:.2f}"
+        text = f"#{tid} {result} {circ:.2f}"
         (tw, th), _ = cv2.getTextSize(text, cv2.FONT_HERSHEY_SIMPLEX, scale, thick)
         x0, y0 = px.min(axis=0)
         x = min(max(int(x0), 2), w - tw - 2)  # 화면 밖으로 글자가 잘리지 않게
@@ -192,7 +202,7 @@ def draw(img: np.ndarray, items: list[tuple[np.ndarray, str, float]], hud: list[
     return img
 
 
-def render_jpeg(img: np.ndarray, items: list[tuple[np.ndarray, str, float]], hud: list[str]) -> bytes:
+def render_jpeg(img: np.ndarray, items: list[tuple[np.ndarray, str, float, int]], hud: list[str]) -> bytes:
     ok, buf = cv2.imencode(".jpg", draw(img, items, hud), [cv2.IMWRITE_JPEG_QUALITY, JPEG_QUALITY])
     if not ok:
         raise HTTPException(500, "JPEG 인코딩 실패")
@@ -235,6 +245,7 @@ async def lifespan(app: FastAPI):
 
 
 app = FastAPI(title="C4 Visualizer", lifespan=lifespan)
+app.add_middleware(CORSMiddleware, allow_origins=CORS_ORIGINS, allow_methods=["GET", "POST"], allow_headers=["*"])
 
 
 @app.middleware("http")
@@ -281,18 +292,20 @@ async def visualize(f: InferenceResult):
         state.last_id = key
 
     h, w = img.shape[:2]
-    items, tracked = [], []
+    shapes, tracked = [], []
     for o in f.objects:
         pts = np.asarray(o.contour, dtype=np.float32).reshape(-1, 2)
         if len(pts) < 3:
             continue
-        if pts.max() > 1.0:  # 픽셀 좌표로 왔으면 0~1 로 바꾼다
+        # 픽셀 좌표로 왔으면 0~1 로 바꾼다. 화면 밖으로 살짝 나간 과자는 0~1 좌표여도 1 을 조금 넘으므로 기준은 2
+        if pts.max() > 2.0:
             pts = pts / np.array([f.width or w, f.height or h], dtype=np.float32)
         result = "WAIT" if touches_edge(pts) else o.result
         cx, cy = centroid(pts)
-        items.append((pts, result, o.circularity))
+        shapes.append((pts, o.circularity))
         tracked.append(Tracked(cx, cy, result))
-    count_crossings(tracked)
+    track(tracked)
+    items = [(pts, t.result, circ, t.tid) for (pts, circ), t in zip(shapes, tracked)]
 
     latency_ms = None if f.timestamp is None else int((time.time() - f.timestamp) * 1000)
     defect_in_frame = sum(t.result == "FAIL" for t in tracked)
@@ -326,8 +339,8 @@ async def visualize(f: InferenceResult):
         "image": base64.b64encode(jpeg).decode(),
         "summary": summary,
         "objects": [
-            {"id": i, "result": result, "circularity": round(circ, 4)}
-            for i, (_, result, circ) in enumerate(items)
+            {"id": tid, "result": result, "circularity": round(circ, 4)}
+            for _, result, circ, tid in items
         ],
     })
     metrics.processed += 1

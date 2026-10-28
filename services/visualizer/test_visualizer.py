@@ -84,6 +84,12 @@ class VisualizerTest(unittest.TestCase):
         self.send(1, [{"contour": contour, "circularity": 0.5, "result": "FAIL"}])
         self.assertEqual(self.gateway.sent[-1]["objects"][0]["result"], "WAIT")
 
+    def test_normalized_contour_slightly_off_screen_is_not_pixel(self):
+        """화면 오른쪽 밖으로 살짝 나간 과자 (0~1 좌표인데 x 가 1 을 넘음) 는 픽셀로 착각하지 않고 WAIT"""
+        self.send(1, [{"contour": square(0.98, 0.5), "circularity": 0.5, "result": "FAIL"}])
+        self.assertEqual(self.gateway.sent[-1]["objects"][0]["result"], "WAIT")
+        self.assertEqual(self.gateway.sent[-1]["summary"]["in_frame"], 1)
+
     def test_old_frame_dropped(self):
         self.send("10", [])
         r = self.send("9", [])
@@ -106,6 +112,21 @@ class VisualizerTest(unittest.TestCase):
             self.send(i, [{"contour": square(x, 0.5), "circularity": 0.9, "result": "PASS"}])
         s = self.gateway.sent[-1]["summary"]
         self.assertEqual((s["passed_total"], s["defect_total"]), (1, 0))
+
+    def test_same_cookie_keeps_id(self):
+        """같은 과자는 프레임이 바뀌어도 같은 번호, 새로 들어온 과자는 새 번호"""
+        self.send(0, [{"contour": square(0.60, 0.5), "circularity": 0.9, "result": "PASS"}])
+        first = self.gateway.sent[-1]["objects"][0]["id"]
+        self.send(1, [{"contour": square(0.56, 0.5), "circularity": 0.9, "result": "PASS"},
+                      {"contour": square(0.85, 0.5), "circularity": 0.6, "result": "FAIL"}])
+        ids = [o["id"] for o in self.gateway.sent[-1]["objects"]]
+        self.assertEqual(ids[0], first)
+        self.assertNotEqual(ids[1], first)
+
+    def test_cors_for_dashboard(self):
+        r = self.client.options("/reset", headers={"Origin": "http://localhost:8000", "Access-Control-Request-Method": "POST"})
+        self.assertEqual(r.status_code, 200)
+        self.assertIn(r.headers.get("access-control-allow-origin"), ("*", "http://localhost:8000"))
 
     def test_slow_gateway_does_not_block_inference(self):
         main.app.state.client = self.gateway = FakeGateway(delay=1.0)
