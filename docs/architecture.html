@@ -140,22 +140,6 @@ th{background:var(--code);font-weight:600;white-space:nowrap}
 </table></div>
 <p>제안 문서: <code>services/visualizer/contracts/inference-visualizer.md</code>(④), <code>services/visualizer/contracts/visualizer-gateway.md</code>(⑤⑥). preprocessing API: <code>services/preprocessing/README.md</code>(②).</p>
 
-<h2>주소 규칙</h2>
-<div class="tw"><table>
-  <tr><th>컨테이너 → 컨테이너</th><td>②~⑤. Docker 네트워크 안에서 서비스 이름으로 부른다 (<code>http://visualizer:8004</code>). 컨테이너 안의 <code>localhost</code>는 자기 자신이다.</td></tr>
-  <tr><th>브라우저 → 컨테이너</th><td>⓪ ⑥ ⑦. 브라우저는 Docker 네트워크 밖이라 호스트 주소와 포트로 부른다 (<code>localhost:8004</code>).</td></tr>
-  <tr><th>web 컨테이너</th><td>HTML을 내려주는 일만 하고 다른 컨테이너를 직접 부르지 않는다. 화면의 실시간 데이터(⑥)와 초기화(⑦)는 브라우저가 직접 연결한다.</td></tr>
-</table></div>
-
-<h2>정해지지 않은 것</h2>
-<div class="tw"><table>
-  <tr><th>항목</th><th>정할 사람</th></tr>
-  <tr><td>① 휴대폰에서 gateway로 프레임을 보내는 방식</td><td>우진</td></tr>
-  <tr><td>③ inference를 부르는 쪽(gateway 또는 preprocessing)과 요청 형식</td><td>우진 · 진아 · 대희</td></tr>
-  <tr><td>⑤ gateway의 <code>/result</code> 수신, ⑥ <code>/ws/view</code> 주소와 메시지 형식</td><td>우진 · 도은 · 명수</td></tr>
-  <tr><td>inference를 여러 개 띄울 때(Nginx Scale-out) 로드밸런서 위치. ③이 정해져야 정할 수 있다.</td><td>전원</td></tr>
-</table></div>
-
 </div>
 </body>
 </html>
