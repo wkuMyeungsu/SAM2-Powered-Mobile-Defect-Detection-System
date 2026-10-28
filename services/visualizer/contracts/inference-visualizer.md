@@ -33,7 +33,9 @@
 | `objects[].result` | `"PASS"` \| `"FAIL"` \| `"WAIT"` | ✅ | 판정 결과입니다. `WAIT`은 판정 보류(테두리에 걸침, 마스크 점수 낮음 등)입니다. |
 | `objects[].reason` | string | | 판정 이유입니다. 있으면 gateway·web으로 그대로 넘깁니다. |
 
-이 밖의 필드(`solidity`, `fill`, `candidate` 등)는 보내셔도 무시합니다.
+| `objects[].solidity`, `objects[].fill` | float | | 볼록도, 원 채움률입니다. 있으면 점검 화면(`MARK_DETAIL=1`)에 판정을 가른 값으로 표시합니다. |
+
+이 밖의 필드(`candidate`, `notch` 등)는 보내셔도 무시합니다. 가로나 세로가 화면의 절반보다 큰 윤곽선은 과자가 아닌 배경으로 보고 그리지도 세지도 않습니다.
 
 preprocessing 응답을 받아 그대로 이어 붙이는 경우의 예시입니다.
 

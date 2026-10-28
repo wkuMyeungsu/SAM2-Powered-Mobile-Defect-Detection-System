@@ -30,12 +30,15 @@
 |---|---|
 | `frame_id`, `timestamp` | gateway가 처음 붙인 값을 받은 타입 그대로 돌려드립니다 (`frame_id`는 숫자 또는 문자열). 중간에 `timestamp`가 빠지면 `null`입니다. |
 | `latency_ms` | gateway 수신부터 visualizer 처리 완료까지 걸린 시간입니다. 성능 측정에 쓰실 수 있습니다. `timestamp`가 없으면 `null`입니다. |
+| `upstream_ms` | 그중 앞 단계(gateway 수신 → visualizer 도착, 즉 preprocessing·inference) 시간입니다. `timestamp`가 없으면 `null`입니다. |
+| `visualizer_ms` | 그중 visualizer 처리 시간입니다. |
 | `image` | 윤곽선과 판정 글자를 그린 JPEG(화질 80) base64입니다. 이미지와 판정이 어긋나지 않도록 한 메시지에 함께 담았습니다. |
 | `summary.in_frame` | 지금 화면에 보이는 과자 수입니다(WAIT 포함). |
 | `summary.defect_in_frame` | 그중 FAIL 수입니다. |
 | `summary.passed_total` | 검사선을 지난 과자의 누적 수입니다. 같은 과자를 여러 번 세지 않습니다. |
 | `summary.defect_total` | 그중 FAIL 누적 수입니다. |
-| `objects[].reason` | inference가 붙인 판정 이유입니다. inference가 보내지 않으면 `null`입니다. |
+| `summary.ignored` | 과자가 아닌 배경(화면 절반보다 큰 윤곽선)이라 무시한 개수입니다. 0보다 크면 촬영 범위를 확인하라는 신호입니다. |
+| `objects[].reason` | 판정 이유입니다. inference가 붙인 값을 그대로 넘기고, 화면 테두리에 걸려 visualizer가 `WAIT`으로 바꾼 과자는 `"touches frame edge"`입니다. 이유가 없으면 `null`입니다. |
 | `objects[].id` | 과자 고정 번호입니다. 프레임이 바뀌어도 같은 과자는 같은 번호이고, 마킹 이미지에도 `#17`처럼 같은 번호가 표시됩니다. |
 | `objects[].result` | `PASS` / `FAIL` / `WAIT`(화면 테두리에 걸쳐 판정 보류)입니다. |
 
