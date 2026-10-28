@@ -1,6 +1,6 @@
 # 결과 재수신: visualizer → gateway → web (구조도 ⑤ ⑥)
 
-- 상태: **초안**. 도은 님 제안(`services/visualizer/contracts/visualizer-gateway.md`)을 gateway가 그대로 받는다.
+- 상태: **확인됨**. 도은 님 형식(`services/visualizer/contracts/visualizer-gateway.md`, 확인됨)을 gateway가 그대로 받고, 명수 님 대시보드가 `/ws/view`·`/qr.svg`·`/api/default-session`을 쓴다. gateway → 전처리 → 추론 → visualizer → gateway → 대시보드 연결 테스트 통과.
 - 확인: 우진(gateway) · 도은(visualizer) · 명수(web)
 
 ## ⑤ visualizer → gateway
@@ -10,7 +10,9 @@
 | 응답 | 뜻 |
 |---|---|
 | `200 {"delivered": 2}` | 전달됨 (숫자는 결과를 받은 화면 수) |
-| `400` | `frame_id`나 `image`가 없음 |
+| `400` | `image`가 없음 |
+
+`frame_id`가 `null`이면(inference가 번호를 빠뜨린 경우) 대시보드에만 전달한다. `objects[].reason` 같은 필드도 손대지 않고 그대로 넘긴다.
 
 ## ⑥ gateway → web
 
@@ -25,7 +27,9 @@
 | 주소 | 하는 일 |
 |---|---|
 | `GET http://<호스트>:8001/qr.svg` | 휴대폰 접속 QR (SVG). `<img src>`에 그대로 넣는다. 공개 주소를 만드는 몇 초 동안은 `503`이므로 실패하면 2초 뒤 다시 불러온다 |
-| `GET http://<호스트>:8001/api/default-session` | 휴대폰 연결 여부(`phone_connected`), 받은·처리한 프레임 수 |
+| `GET http://<호스트>:8001/api/default-session` | 휴대폰 연결 여부(`phone_connected`), 받은·처리한 프레임 수(`frames_received`, `forwarded`), 오류(`forward_errors`, `last_error`), 터널 상태(`tunnel`) |
+
+기본 세션은 오래 쓰지 않아도 지우지 않는다. 대시보드에 띄운 QR이 끝난 세션을 가리키지 않게 하기 위해서다.
 
 ## 도은 님 질문에 대한 답
 

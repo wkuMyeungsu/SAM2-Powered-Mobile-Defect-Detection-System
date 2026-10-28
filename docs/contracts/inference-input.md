@@ -1,6 +1,6 @@
 # 추론 입력: gateway → inference (구조도 ③)
 
-- 상태: **초안**. 대희 님이 구현한 `POST /infer` 형식(`services/inference/README.md`)을 따른다.
+- 상태: **초안**. dev에 들어간 대희 님 `POST /infer`(`services/inference/README.md`)가 이미 받는 형식이다 (`original_image`, `timestamp` 포함).
 - 확인: 우진(gateway) · 대희(inference) · 도은(visualizer)
 
 ## 누가 부르나
