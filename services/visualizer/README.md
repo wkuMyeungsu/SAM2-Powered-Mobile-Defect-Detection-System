@@ -89,6 +89,27 @@ python services/visualizer/tests/send_sample.py --sim-dir services/visualizer/te
 끝에 시뮬레이터가 센 정답 개수가 출력된다. 라벨 정답을 판정으로 그대로 쓰므로 inference 가 완벽하다고 가정한 테스트다.
 40프레임 테스트에서 visualizer 집계는 정답과 일치했다 (통과 14개, 불량 3개).
 
+## 화면이 이상할 때: 어느 단계 문제인지 진단
+
+휴대폰 프레임 1장을 preprocessing → inference → visualizer 에 차례로 넣고 단계마다 그림을 저장한다.
+`docker compose up` 으로 서비스를 띄운 상태에서, **휴대폰 촬영은 멈추고** 실행한다.
+
+```bash
+pip install httpx opencv-python-headless numpy
+python services/visualizer/tests/diagnose.py 휴대폰프레임.jpg
+```
+
+`services/visualizer/tests/diagnose_out/compare.jpg` 에 세 그림이 나란히 저장된다.
+
+| 그림 | 내용 | 이상하면 |
+|---|---|---|
+| 1 preprocessing | 과자 후보 박스. 화면의 5%보다 큰 박스는 빨간색 | 과자에 박스가 없음 → preprocessing |
+| 2 inference (direct) | inference 가 돌려준 윤곽선을 진단 도구가 직접 그림 | 박스는 맞는데 윤곽선이 틀림 → inference |
+| 3 visualizer | visualizer 가 그린 그림 | 2 와 위치·모양이 다름 → visualizer |
+
+휴대폰 프레임은 gateway 점검 화면(http://localhost:8001)의 원본 미리보기를 저장하거나, 휴대폰으로 직접 찍은 사진을 쓴다.
+모니터 전체·벽·책상이 함께 찍히면 배경이 큰 후보로 잡혀 과자를 못 찾는다. 휴대폰을 가로로 들고 컨베이어만 화면에 꽉 차게 찍는다.
+
 ## 설정 (환경변수)
 
 | 이름 | 기본값 | 설명 |

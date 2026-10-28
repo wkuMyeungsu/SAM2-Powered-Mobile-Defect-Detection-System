@@ -58,6 +58,17 @@ class JudgeTest(unittest.TestCase):
                 result, _ = judge.decide(m, th)
                 self.assertEqual(result, "PASS" if shape == "round" else "FAIL", f"{shape}: {m}")
 
+    def test_tilted_camera_normal_cookies_pass(self):
+        """카메라가 기울어 원이 15% 납작해지고 흐려져도 정상품은 PASS."""
+        rng = random.Random(11)
+        th = judge.Thresholds()
+        for diameter in (50, 78, 120):
+            for _ in range(50):
+                m = render_mask("round", diameter, 55, rng).astype(np.uint8) * 255
+                m = cv2.GaussianBlur(cv2.resize(m, None, fx=1, fy=0.85, interpolation=cv2.INTER_AREA), (0, 0), 1.5)
+                result, reason = judge.decide(judge.measure(judge.clean_mask(m > 127)), th)
+                self.assertEqual(result, "PASS", f"d={diameter}: {reason}")
+
     def test_reason_matches_defect_type(self):
         rng = random.Random(7)
         th = judge.Thresholds()
@@ -97,6 +108,27 @@ class InferApiTest(unittest.TestCase):
 
     def test_health(self):
         self.assertEqual(self.client.get("/health").json()["status"], "ok")
+
+    def test_non_cookie_candidate_is_dropped(self):
+        image, cands = frame_with([("round", 200, 100)])
+        img = cv2.imdecode(np.frombuffer(base64.b64decode(image), np.uint8), cv2.IMREAD_COLOR)
+        cv2.rectangle(img, (500, 200), (560, 260), (150, 150, 150), cv2.FILLED)  # 회색 화면 글자 상자
+        _, buf = cv2.imencode(".png", img)
+        cands.append({"bbox": [500, 200, 560, 260]})
+        r = self.client.post("/infer", json={"frame_id": 3, "image": base64.b64encode(buf).decode(), "candidates": cands})
+        self.assertEqual([o["candidate"] for o in r.json()["objects"]], [0])
+        self.assertEqual([(d["candidate"], d["why"]) for d in r.json()["dropped"]], [(1, "no cookie color in box")])
+
+    def test_merged_and_duplicate_boxes(self):
+        """쿠키 둘을 묶은 큰 박스는 둘로 나누고, 한 쿠키에 겹친 박스 둘은 하나로 합친다."""
+        image, cands = frame_with([("round", 200, 150), ("round", 350, 150), ("round", 600, 300)])
+        merged = {"bbox": [100, 50, 450, 250]}
+        dup = [{"bbox": [550, 250, 610, 350]}, {"bbox": [590, 250, 660, 350]}]
+        r = self.client.post("/infer", json={"frame_id": 4, "image": image, "candidates": [merged, *dup]})
+        objs = r.json()["objects"]
+        self.assertEqual(len(objs), 3, objs)
+        self.assertEqual(sorted(o["candidate"] for o in objs), [0, 0, 1])
+        self.assertTrue(all(o["result"] == "PASS" for o in objs))
 
     def test_pass_fail_and_edge(self):
         image, cands = frame_with([("round", 200, 100), ("wedge", 450, 250), ("round", 20, 380)])
