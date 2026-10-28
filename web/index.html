@@ -30,6 +30,10 @@
   .stats dd{margin:0;font-size:24px;font-weight:700;font-variant-numeric:tabular-nums}
   .stats .ng dd{color:var(--fail)}
   aside{display:flex;flex-direction:column;gap:16px}
+  .qr{display:flex;gap:12px;align-items:center}
+  #qr{width:132px;height:132px;flex:none;background:var(--bg);border-radius:4px}
+  #qr:not([src]){display:none}
+  .tablewrap{max-height:320px;overflow:auto}
   table{width:100%;border-collapse:collapse;font-size:13px;font-variant-numeric:tabular-nums}
   th,td{text-align:left;padding:4px 6px;border-bottom:1px solid var(--line)}
   .PASS{color:var(--pass);font-weight:700}.FAIL{color:var(--fail);font-weight:700}.WAIT{color:var(--wait);font-weight:700}
@@ -57,6 +61,14 @@
 
   <aside>
     <section class="panel">
+      <h2>휴대폰 연결</h2>
+      <div class="qr">
+        <img id="qr" alt="휴대폰 카메라 접속 QR 코드">
+        <p class="note" id="phone" aria-live="polite">gateway 확인 중</p>
+      </div>
+    </section>
+
+    <section class="panel">
       <h2>집계</h2>
       <dl class="stats">
         <div><dt>화면 속 과자</dt><dd id="in">-</dd></div>
@@ -80,10 +92,10 @@
 
     <section class="panel">
       <h2>현재 프레임 판정 <small>(gateway 연결 시)</small></h2>
-      <table>
+      <div class="tablewrap"><table>
         <thead><tr><th>#</th><th>판정</th><th>원형도</th></tr></thead>
         <tbody id="objs"></tbody>
-      </table>
+      </table></div>
     </section>
   </aside>
 </main>
@@ -92,6 +104,7 @@
 // 주소와 메시지 형식은 services/visualizer/contracts/visualizer-gateway.md 제안안과 visualizer README 기준
 const WS_URL = `${location.protocol === "https:" ? "wss" : "ws"}://${location.hostname}:8001/ws/view`;
 const VIS = `${location.protocol}//${location.hostname}:8004`;
+const GW = `${location.protocol}//${location.hostname}:8001`;
 
 const $ = (id) => document.getElementById(id);
 let wsOpen = false;
@@ -173,6 +186,28 @@ $("reset").onclick = async () => {
 
 connect();
 poll();
+
+// QR은 gateway가 공개 HTTPS 주소(터널)를 만든 뒤에야 나온다. 그 전에는 503이라 2초마다 다시 불러온다.
+$("qr").onerror = () => { $("qr").removeAttribute("src"); setTimeout(loadQr, 2000); };
+function loadQr() { $("qr").src = `${GW}/qr.svg?t=${Date.now()}`; }
+loadQr();
+
+async function pollPhone() {
+  try {
+    const s = await (await fetch(GW + "/api/default-session")).json();
+    const lines = [
+      s.phone_connected ? "휴대폰 연결됨" : "휴대폰 미연결 · QR을 찍어 접속",
+      `받은 프레임 ${s.frames_received} · 추론 보냄 ${s.forwarded} · 오류 ${s.forward_errors}`,
+    ];
+    if (!s.tunnel.url) lines.push(`접속 주소 준비 중 (터널: ${s.tunnel.status})`);
+    if (s.last_error) lines.push(`마지막 오류: ${s.last_error}`);
+    $("phone").replaceChildren(...lines.flatMap((t, i) => i ? [document.createElement("br"), t] : [t]));
+  } catch {
+    $("phone").textContent = "gateway에 연결할 수 없습니다";
+  }
+  setTimeout(pollPhone, 2000);
+}
+pollPhone();
 </script>
 </body>
 </html>
