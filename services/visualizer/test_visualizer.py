@@ -100,6 +100,46 @@ class VisualizerTest(unittest.TestCase):
         self.assertIsNone(sent["frame_id"])
         self.assertEqual(sent["objects"][0]["reason"], "straight cut or broken")
 
+    def test_latency_split(self):
+        """전체 지연 = 앞 단계(gateway→visualizer 도착) + visualizer 처리"""
+        self.send(1, [], timestamp=time.time() - 1.0)
+        sent = self.gateway.sent[-1]
+        self.assertGreaterEqual(sent["upstream_ms"], 1000)
+        self.assertGreaterEqual(sent["visualizer_ms"], 0)
+        self.assertGreaterEqual(sent["latency_ms"], sent["upstream_ms"])
+        m = self.client.get("/metrics").json()
+        self.assertIsNotNone(m["upstream_ms"]["avg"])
+        self.assertIsNotNone(m["visualizer_ms"]["avg"])
+
+    def test_huge_background_object_ignored(self):
+        """화면 절반보다 큰 물체(모니터·벽이 잘못 잡힌 것)는 그리지도 세지도 않는다"""
+        big = {"contour": square(0.5, 0.5, half=0.3), "circularity": 0.2, "result": "FAIL"}
+        cookie = {"contour": square(0.6, 0.5), "circularity": 0.9, "result": "PASS"}
+        self.send(1, [big, cookie])
+        sent = self.gateway.sent[-1]
+        self.assertEqual(sent["summary"]["ignored"], 1)
+        self.assertEqual(sent["summary"]["in_frame"], 1)
+        self.assertEqual([o["result"] for o in sent["objects"]], ["PASS"])
+
+    def test_portrait_frame_without_cookies(self):
+        """세로 프레임에 배경만 잡혀도 오류 없이 처리한다 (경고 문구를 그림)"""
+        tall = base64.b64encode(cv2.imencode(".jpg", np.full((400, 200, 3), 40, np.uint8))[1]).decode()
+        body = {"frame_id": 1, "image": tall, "objects": [{"contour": square(0.5, 0.5, half=0.4), "circularity": 0.1, "result": "WAIT"}]}
+        self.assertEqual(self.client.post("/visualize", json=body).json()["status"], "ok")
+
+    def test_label_lines(self):
+        v = {"circularity": 0.90, "solidity": 0.987, "fill": 0.949}
+        self.assertEqual(main.label_lines(5, "PASS", "", v), ["#5 PASS"])
+        self.assertEqual(main.label_lines(5, "FAIL", "straight cut or broken", v), ["#5 FAIL CUT"])
+        self.assertEqual(main.label_lines(5, "WAIT", main.EDGE_REASON, v), ["#5 WAIT EDGE"])
+        self.assertEqual(main.label_lines(5, "FAIL", None, v), ["#5 FAIL 0.90"])  # 이유가 없으면 원형도
+        main.MARK_DETAIL = True
+        try:
+            self.assertEqual(main.label_lines(5, "FAIL", "straight cut or broken", v), ["#5 FAIL CUT", "fill 0.949"])
+            self.assertEqual(main.label_lines(5, "FAIL", "notch (bite or missing piece)", v), ["#5 FAIL NOTCH", "solid 0.987"])
+        finally:
+            main.MARK_DETAIL = False
+
     def test_old_frame_dropped(self):
         self.send("10", [])
         r = self.send("9", [])
