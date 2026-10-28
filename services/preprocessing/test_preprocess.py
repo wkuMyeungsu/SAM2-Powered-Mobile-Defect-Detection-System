@@ -51,6 +51,49 @@ class PreprocessTest(unittest.TestCase):
         with self.assertRaises(ValueError):
             preprocess.Config(original_mode="nope")
 
+    def test_box_pad(self):
+        base = preprocess.run(synthetic_frame())["candidates"]
+        padded = preprocess.run(synthetic_frame(), cfg=preprocess.Config(box_pad=0.1))["candidates"]
+        self.assertEqual(len(base), len(padded))
+        for b, p in zip(base, padded):
+            bw = b["bbox"][2] - b["bbox"][0]
+            self.assertAlmostEqual(p["bbox"][0], b["bbox"][0] - round(bw * 0.1), delta=1)
+            self.assertGreater(p["bbox"][2], b["bbox"][2])
+            self.assertEqual(b["point"], p["point"])  # 중심점은 그대로
+
+    def test_box_pad_clipped_to_frame(self):
+        img = np.full((400, 400, 3), 220, np.uint8)
+        cv2.circle(img, (30, 200), 60, (40, 90, 160), -1)  # 왼쪽 테두리에 걸친 과자
+        ok, buf = cv2.imencode(".png", img)
+        out = preprocess.run(buf.tobytes(), cfg=preprocess.Config(box_pad=0.3))
+        x1, y1, x2, y2 = out["candidates"][0]["bbox"]
+        self.assertTrue(x1 >= 0 and y1 >= 0 and x2 <= 400 and y2 <= 400)
+
+    def test_roi(self):
+        # 오른쪽 과자(지름 360px, 중심 x≈1300/1920=0.68) 쪽만 보도록 ROI 를 잡는다.
+        cfg = preprocess.Config(roi="0.5,0.1,1.0,0.9")
+        out = preprocess.run(synthetic_frame(), cfg=cfg)
+        self.assertEqual(len(out["candidates"]), 1)
+        c = out["candidates"][0]
+        self.assertGreater(c["point"][0], 0.5 * out["width"])  # 좌표는 화면 전체 기준
+        full = [d for d in preprocess.run(synthetic_frame())["candidates"] if d["point"][0] > 0.5 * out["width"]][0]
+        self.assertEqual(c["bbox"], full["bbox"])
+
+    def test_bad_settings(self):
+        for kw in ({"roi": "0.5,0.5,0.2,0.9"}, {"roi": "a,b"}, {"roi": "0,0,1.5,1"},
+                   {"white_balance": "maybe"}, {"box_pad": -0.1}, {"box_pad": 0.9}):
+            with self.assertRaises(ValueError, msg=kw):
+                preprocess.Config(**kw)
+
+    def test_white_balance_off(self):
+        out = preprocess.run(synthetic_frame(), cfg=preprocess.Config(white_balance="off"))
+        self.assertEqual(len(out["candidates"]), 2)
+
+    def test_debug_image(self):
+        debug = []
+        out = preprocess.run(synthetic_frame(), debug=debug, cfg=preprocess.Config(roi="0.1,0.1,0.9,0.9"))
+        self.assertEqual(debug[0].shape[:2], (out["height"], out["width"]))
+
     def test_invalid_image(self):
         with self.assertRaises(preprocess.PreprocessError):
             preprocess.run(b"not an image")

@@ -11,9 +11,9 @@ gateway에서 받은 프레임을 SAM 2 추론에 맞게 다듬고, 과자 후�
 1. 디코드 (JPEG/PNG)
 2. 리사이즈 — 긴 변을 `TARGET_SIZE`(기본 1024)에 맞춤. 작은 이미지는 키우지 않음
 3. 노이즈 제거 — 3×3 가우시안 블러
-4. 화이트밸런스 — gray-world (조명 색 보정)
+4. 화이트밸런스 — gray-world (조명 색 보정, `WHITE_BALANCE=off`로 끌 수 있음)
 5. 대비 보정 — LAB의 L 채널에만 CLAHE
-6. 후보 영역 검출 — Otsu 이진화 → 열림/닫힘 → 외곽선 → 면적 필터. 큰 순서로 최대 `MAX_CANDIDATES`개
+6. 후보 영역 검출 — (`ROI`가 있으면 그 안에서만) Otsu 이진화 → 열림/닫힘 → 외곽선 → 면적 필터. 큰 순서로 최대 `MAX_CANDIDATES`개. 박스는 `BOX_PAD`만큼 넓힘
 7. (`/frame`만) inference로 전송 — 아래 "inference로 보내기" 참고
 
 ## API (초안 — `docs/contracts/`에 합의 후 옮길 예정)
@@ -33,6 +33,10 @@ gateway에서 받은 프레임을 SAM 2 추론에 맞게 다듬고, 과자 후�
 - JSON: `Content-Type: application/json`, `{"frame_id": "123", "timestamp": 1761600000.123, "image": "<base64 JPEG/PNG>"}`. `data:image/jpeg;base64,` 접두어는 있어도 된다
 
 `frame_id`, `timestamp`는 바꾸지 않고 그대로 다음 단계로 넘긴다. `timestamp`는 선택이다.
+
+### `GET /latest.jpg`
+
+마지막으로 받은 프레임(색 보정 전)에 `ROI`(파랑), 찾은 박스(초록), 중심점(빨강), 후보 개수를 그린 JPEG. 받은 프레임이 없으면 `404`.
 
 ### `POST /frame` — gateway가 부르는 곳
 
@@ -96,8 +100,45 @@ gateway에서 받은 프레임을 SAM 2 추론에 맞게 다듬고, 과자 후�
 | `MAX_CANDIDATES` | 20 | 후보 최대 개수 |
 | `MAX_BODY_BYTES` | 10485760 | 요청 본문 최대 크기 |
 | `ORIGINAL_MODE` | `resized` | `original_image`: `resized` 리사이즈만 한 이미지(`image`와 같은 크기), `raw` 받은 바이트 그대로, `off` 보내지 않음 |
+| `BOX_PAD` | 0 | 박스를 가로·세로 크기의 이 비율만큼 사방으로 넓힘 (0~0.5). 화면 밖으로는 넓히지 않음 |
+| `ROI` | (없음) | 과자를 찾을 영역 `x1,y1,x2,y2` (0~1 비율). 예: `0.1,0.2,0.9,0.8`. 비우면 화면 전체 |
+| `WHITE_BALANCE` | `on` | `off`면 gray-world 화이트밸런스를 하지 않음 |
 | `INFERENCE_URL` | `http://inference:8003/infer` | `/frame` 결과를 보낼 곳. 비우면 보내지 않음 |
 | `INFERENCE_TIMEOUT` | 10 | inference 응답 대기 (초). CPU SAM 2는 프레임당 1~2초 |
+
+## 실제 카메라에 맞추기
+
+시뮬레이터처럼 깨끗한 화면을 기준으로 만들어서, 실제 카메라에서는 아래를 먼저 맞춘다.
+
+**촬영 환경** (가장 효과가 크다)
+
+- 폰을 컨베이어 바로 위에서 수직으로 고정한다. 비스듬하면 원이 타원으로 찍혀 정상 과자도 `FAIL`이 된다.
+- 과자와 색이 확실히 다른 단색 배경을 깐다 (밝은 과자 → 검은 천).
+- 폰 카메라의 노출·초점을 잠근다 (화면 길게 누르기 → AE/AF 잠금).
+
+**설정 맞추기**
+
+1. 저장소 루트의 `.env`에 값을 적는다 (`.env.example`을 복사해 만든다). 다시 빌드할 필요는 없고 컨테이너만 다시 띄운다.
+   ```
+   BOX_PAD=0.08
+   ROI=0.1,0.2,0.9,0.8
+   WHITE_BALANCE=off
+   ```
+   ```bash
+   docker compose up -d preprocessing
+   ```
+2. 카메라를 켠 채로 브라우저에서 `http://localhost:8002/latest.jpg`를 연다 (새로고침할 때마다 최신 프레임). 파란 상자가 ROI, 초록 상자가 찾은 과자, 빨간 점이 중심이다.
+3. `http://localhost:8002/health`의 `settings`에서 적용된 값을 확인한다.
+
+| 화면에서 보이는 것 | 바꿀 값 |
+|---|---|
+| 정상 과자가 `FAIL`, 외곽선이 과자 가장자리를 덜 감쌈 | `BOX_PAD`를 0.05~0.1로 |
+| 손, 책상, 컨베이어 밖 물건에 초록 상자 | `ROI`를 컨베이어 영역으로 |
+| 프레임마다 색이 출렁이거나 과자 일부만 잡힘 | `WHITE_BALANCE=off` |
+| 부스러기·반사광에 작은 상자 | `MIN_AREA_RATIO`를 0.005~0.01로 |
+| 상자가 하나도 없거나 화면 전체가 하나로 잡힘 | 배경·조명을 먼저 바꾼다 (Otsu는 배경과 과자의 밝기 차이로 나눈다) |
+
+값을 잘못 적으면 (예: `ROI=0.9,0,0.1,1`) 컨테이너가 시작하면서 오류를 내고 멈춘다. `docker compose logs preprocessing`에서 이유를 볼 수 있다.
 
 ## 실행·확인
 

@@ -130,6 +130,13 @@ class ServiceTest(unittest.TestCase):
             out = json.loads(r.read())
         self.assertEqual(out["status"], "ok")
         self.assertIn("sent", out["forward"])
+        self.assertEqual(out["settings"]["white_balance"], "on")
+
+    def test_latest_jpg(self):
+        post("/preprocess", synthetic_frame(), {"Content-Type": "image/jpeg"})
+        with urllib.request.urlopen(BASE + "/latest.jpg", timeout=5) as r:
+            self.assertEqual(r.headers["Content-Type"], "image/jpeg")
+            self.assertEqual(r.read()[:2], b"\xff\xd8")
 
 
 if __name__ == "__main__":

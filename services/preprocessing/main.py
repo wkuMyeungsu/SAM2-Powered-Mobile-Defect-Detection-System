@@ -4,12 +4,14 @@ gateway 가 보낸 프레임을 SAM 2 에 맞게 다듬고 과자 후보 박스�
 
 - POST /frame      : 전처리 후 inference 로 전송 (gateway 가 부르는 곳). 바로 202 로 응답한다.
 - POST /preprocess : 전처리 결과를 그대로 돌려준다 (확인·디버그용, inference 로 보내지 않음).
+- GET  /latest.jpg : 마지막 프레임에 ROI(파랑)와 찾은 박스(초록)를 그린 이미지. 실제 카메라로 설정을 맞출 때 쓴다.
 """
 import base64
 import binascii
 import json
 import logging
 import os
+import threading
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import parse_qs, urlparse
 
@@ -27,6 +29,8 @@ logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(mess
 log = logging.getLogger("preprocessing")
 
 forwarder = forward.Forwarder(INFERENCE_URL, INFERENCE_TIMEOUT)
+latest = {"img": None}
+latest_lock = threading.Lock()
 
 
 class BadRequest(ValueError):
@@ -86,13 +90,33 @@ class Handler(BaseHTTPRequestHandler):
         self.wfile.write(body)
 
     def do_GET(self):
-        if urlparse(self.path).path == "/health":
+        path = urlparse(self.path).path
+        if path == "/health":
             self.send_json(200, {
                 "service": SERVICE,
                 "status": "ok",
                 "inference_url": INFERENCE_URL or None,
+                "settings": {
+                    "box_pad": CONFIG.box_pad,
+                    "roi": CONFIG.roi or None,
+                    "white_balance": CONFIG.white_balance,
+                    "min_area_ratio": CONFIG.min_area_ratio,
+                },
                 "forward": forwarder.snapshot(),
             })
+        elif path == "/latest.jpg":
+            with latest_lock:
+                img = latest["img"]
+            if img is None:
+                self.send_json(404, {"error": "아직 받은 프레임이 없음"})
+                return
+            body = preprocess.encode_jpeg(img, 85)
+            self.send_response(200)
+            self.send_header("Content-Type", "image/jpeg")
+            self.send_header("Cache-Control", "no-store")
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
         else:
             self.send_json(404, {"error": "not found"})
 
@@ -103,7 +127,10 @@ class Handler(BaseHTTPRequestHandler):
             return
         try:
             data, frame_id, timestamp = read_frame(self, url)
-            result = preprocess.run(data, frame_id, CONFIG, timestamp)
+            debug = []
+            result = preprocess.run(data, frame_id, CONFIG, timestamp, debug)
+            with latest_lock:
+                latest["img"] = debug[0]
         except BadRequest as e:
             self.send_json(e.status, {"error": str(e)})
             return
@@ -125,7 +152,7 @@ class Handler(BaseHTTPRequestHandler):
 
     def log_message(self, fmt, *args):
         # 헬스체크와 프레임마다 찍히는 접근 로그는 생략한다. 오류 응답만 남긴다.
-        if "/health" in self.path:
+        if "/health" in self.path or "/latest.jpg" in self.path:
             return
         if self.path.startswith("/frame") and len(args) > 1 and str(args[1]).startswith("2"):
             return
