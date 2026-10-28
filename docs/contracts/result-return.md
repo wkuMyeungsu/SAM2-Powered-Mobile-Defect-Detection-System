@@ -34,6 +34,6 @@
 ## 도은 님 질문에 대한 답
 
 1. `/result` 경로로 받는다.
-2. gateway가 프레임을 받을 때 `frame_id`와 `timestamp`(unix 초)를 붙여 inference에 넘긴다. preprocessing은 거치지 않아도 된다 (gateway가 직접 inference에 넘김, `inference-input.md`). 원본 이미지도 `original_image`로 함께 넘긴다.
+2. gateway가 프레임을 받을 때 `frame_id`와 `timestamp`(unix 초)를 붙여 preprocessing `POST /frame`에 `X-Frame-Id`, `X-Timestamp` 헤더로 넘긴다. preprocessing이 둘을 그대로 inference로 넘기고, 원본 이미지도 `original_image`로 함께 넘긴다 (`services/preprocessing/contracts/`).
 3. web으로 JSON을 그대로 넘긴다.
 4. WebSocket 주소는 `ws://<호스트>:8001/ws/view`.

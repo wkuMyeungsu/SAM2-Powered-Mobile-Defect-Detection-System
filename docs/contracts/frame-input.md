@@ -37,7 +37,7 @@ gateway → 휴대폰 (텍스트)
 | 보내는 주기 | 초당 `fps`장(기본 5). 네트워크가 밀리면 휴대폰이 그 장은 건너뛴다 |
 | 크기 제한 | 한 장 2MB. 넘거나 JPEG가 아니면 gateway가 버린다 |
 
-긴 변 1024px은 SAM 2 입력 크기(긴 변 1024)에 맞춘 값이다. 초당 5장은 화면 미리보기용이고, 실제 처리(전처리 → 추론)로는 gateway가 최신 프레임만 골라 보낸다 (`preprocessing-input.md`). 전처리도 긴 변을 1024로 맞추므로(`TARGET_SIZE`) 두 번 줄이지 않는다.
+긴 변 1024px은 SAM 2 입력 크기(긴 변 1024)에 맞춘 값이다. gateway는 preprocessing `POST /frame`에 한 번에 1장씩, 응답을 기다리는 동안 들어온 프레임 중 최신 1장만 보낸다 (형식: `services/preprocessing/contracts/gateway-preprocessing.md`). 전처리도 긴 변을 1024로 맞추므로(`TARGET_SIZE`) 두 번 줄이지 않는다.
 
 gateway는 받은 프레임마다 `frame_id`와 받은 시각 `timestamp`(unix 초)를 붙여 뒤 단계로 넘긴다. `frame_id`는 gateway 전체에서 1씩 늘어나고, 시작값을 시각에서 정해서(예: `259363611`) 세션이 바뀌거나 gateway를 다시 켜도 작아지지 않는다. visualizer가 번호가 작아진 프레임을 오래된 것으로 보고 버리기 때문이다.
 
