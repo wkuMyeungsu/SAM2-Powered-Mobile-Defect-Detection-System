@@ -1,6 +1,6 @@
 # 추론 결과: inference → visualizer
 
-상태: **제안** (visualizer 작성, inference 확인 필요)
+상태: **확인됨**. inference(대희)가 이 형식으로 보냅니다 (`services/inference/README.md`). 전처리 → 추론 → visualizer 실제 코드 연결 테스트 통과.
 
 ## 요청
 

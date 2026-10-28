@@ -1,6 +1,6 @@
 # 재수신: visualizer → gateway → web
 
-상태: **제안** (visualizer 작성, gateway·web 확인 필요)
+상태: **확인됨**. gateway(우진)가 그대로 받고 web으로 넘깁니다 (`docs/contracts/result-return.md`). web(명수) 대시보드도 이 형식을 씁니다. gateway → 전처리 → 추론 → visualizer → gateway → `/ws/view` 전체 연결 테스트 통과.
 
 ## 1. visualizer → gateway
 
